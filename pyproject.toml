@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "face-liveness-check"
+version = "0.1.0"
+description = "Composable face liveness and identity-verification orchestration for Python."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Face Liveness Check contributors" }]
+keywords = ["face-verification", "liveness", "anti-spoofing", "biometrics"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+opencv = ["opencv-python-headless>=4.8"]
+onnx = ["onnxruntime>=1.17"]
+dev = ["pytest>=8", "build>=1.2"]
+
+[project.urls]
+Homepage = "https://github.com/REPLACE_WITH_OWNER/face-liveness-check"
+Repository = "https://github.com/REPLACE_WITH_OWNER/face-liveness-check"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/face_liveness_check"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
