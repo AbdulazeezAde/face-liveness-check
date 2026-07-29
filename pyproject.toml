@@ -25,12 +25,12 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 opencv = ["opencv-python-headless>=4.8"]
-onnx = ["onnxruntime>=1.17"]
+onnx = ["onnxruntime>=1.17", "opencv-python-headless>=4.8"]
 dev = ["pytest>=8", "build>=1.2"]
 
 [project.urls]
-Homepage = "https://github.com/REPLACE_WITH_OWNER/face-liveness-check"
-Repository = "https://github.com/REPLACE_WITH_OWNER/face-liveness-check"
+Homepage = "https://github.com/AbdulazeezAde/face-liveness-check"
+Repository = "https://github.com/AbdulazeezAde/face-liveness-check"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/face_liveness_check"]
