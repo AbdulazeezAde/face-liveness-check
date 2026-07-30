@@ -61,6 +61,22 @@ duplicate-frame replays.
 - **PAD model:** returns a bona-fide probability or logits. Set its live-class
   index explicitly and calibrate the threshold before deployment.
 
+## Browser integration demo
+
+The repository includes a small local browser frontend in
+[`examples/web_demo`](examples/web_demo). It uploads a reference portrait,
+samples webcam frames to a localhost FastAPI service, shows the randomized
+prompts, and renders the verification result. Frames and the reference image
+remain in memory only for the active session.
+
+```powershell
+python -m pip install -e ".[full,demo]"
+python examples/web_demo/server.py --download-models --accept-model-license
+```
+
+Open <http://127.0.0.1:8000> and use the `--pad-advisory` behavior built into
+the demo's active-first policy. See the demo README for security boundaries.
+
 ## Default model pack
 
 Weights are not bundled into the PyPI wheel. The supported `opencv-default` pack
