@@ -15,7 +15,7 @@ from .adapters import OnnxPassiveAntiSpoof, OpenCVYuNetDetector
 from .evidence import EvidencePolicy, LocalEncryptedEvidenceSink
 from .evaluation import PadCandidate, PadEvaluator, PadLabel, append_observation, summarize_observations
 from .model_packs import ModelPackManager, default_registry
-from .models import active_first_policy
+from .models import active_first_profile
 from .presets import create_opencv_verifier_from_pack
 from .reference_io import extract_reference_face_crop_file, load_reference_image_bgr
 from .webcam import verify_webcam
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         evidence_policy, evidence_sink = _local_evidence_options(args)
         verifier = create_opencv_verifier_from_pack(
             installed,
-            policy=active_first_policy() if args.pad_advisory else None,
+            profile=active_first_profile() if args.pad_advisory else None,
             evidence_policy=evidence_policy,
             evidence_sink=evidence_sink,
         )
@@ -224,6 +224,8 @@ def _run_json(run) -> dict[str, object]:
     result = run.result
     return {
         "challenges": list(run.challenges),
+        "profile": run.profile,
+        "automatic_decision_allowed": run.automatic_decision_allowed,
         "matched": result.matched,
         "similarity": result.similarity,
         "reasons": list(result.reasons),

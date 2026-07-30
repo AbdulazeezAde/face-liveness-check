@@ -1,6 +1,6 @@
 """Composable liveness and face-verification orchestration."""
 
-from .models import Challenge, FrameEvidence, LivenessPolicy, LivenessResult, PassiveAntiSpoofMode, VerificationResult, active_first_policy
+from .models import Challenge, FrameEvidence, LivenessPolicy, LivenessResult, PassiveAntiSpoofMode, VerificationProfile, VerificationProfileName, VerificationResult, active_first_policy, active_first_profile, evaluation_profile, strict_profile
 from .session import LivenessSession
 from .adapters import FaceDetection, MediaPipeLandmarkEstimator, OnnxArcFaceEmbedder, OnnxPassiveAntiSpoof, OpenCVSFaceAligner, OpenCVSFaceEmbedder, OpenCVYuNetDetector
 from .activity import ActivityConfig, LandmarkActivityDetector
@@ -12,11 +12,13 @@ from .reference_io import extract_reference_face_crop, extract_reference_face_cr
 from .webcam import verify_webcam
 from .evaluation import PadCandidate, PadEvaluator, PadLabel, PadObservation, append_observation, summarize_observations
 from .evidence import EvidenceArtifact, EvidenceEvent, EvidencePolicy, EvidenceSink, LocalEncryptedEvidenceSink, S3EvidenceSink
+from .review import ReviewEvent, ReviewPolicy, ReviewSink, WebhookReviewSink
 
 __all__ = [
     "Challenge",
     "ActivityConfig",
     "active_first_policy",
+    "active_first_profile",
     "FaceDetection",
     "EvidenceArtifact",
     "EvidenceEvent",
@@ -54,6 +56,9 @@ __all__ = [
     "OpenCVSFaceEmbedder",
     "OpenCVYuNetDetector",
     "ReferenceExtractor",
+    "ReviewEvent",
+    "ReviewPolicy",
+    "ReviewSink",
     "append_observation",
     "load_reference_image_bgr",
     "research_default_pack",
@@ -61,8 +66,13 @@ __all__ = [
     "opencv_default_pack",
     "ReferenceFace",
     "S3EvidenceSink",
+    "strict_profile",
+    "evaluation_profile",
+    "VerificationProfile",
+    "VerificationProfileName",
     "VerificationResult",
     "VerificationRun",
+    "WebhookReviewSink",
     "verify_webcam",
 ]
 

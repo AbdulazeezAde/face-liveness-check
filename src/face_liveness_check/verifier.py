@@ -11,8 +11,9 @@ from uuid import uuid4
 import numpy as np
 
 from .evidence import EvidenceEvent, EvidencePolicy, EvidenceSink, frame_artifact
-from .models import LivenessPolicy, VerificationResult
+from .models import LivenessPolicy, VerificationProfile, VerificationProfileName, VerificationResult
 from .pipeline import FrameEvidenceBuilder, ReferenceExtractor
+from .review import ReviewEvent, ReviewPolicy, ReviewSink
 from .session import LivenessSession
 
 
@@ -21,6 +22,8 @@ class VerificationRun:
     result: VerificationResult
     challenges: tuple[str, ...]
     evidence_session_id: str | None = None
+    profile: str = VerificationProfileName.STRICT.value
+    automatic_decision_allowed: bool = True
 
 
 @dataclass(slots=True)
@@ -48,21 +51,22 @@ class LiveVerification:
 
     def finish(self) -> VerificationRun:
         evidence_session_id = self.session_id if self.verifier.evidence_policy.enabled else None
-        run = VerificationRun(self.session.compare(self.reference_embedding), self.challenges, evidence_session_id)
+        run = VerificationRun(
+            self.session.compare(self.reference_embedding),
+            self.challenges,
+            evidence_session_id,
+            self.verifier.profile_name,
+            self.verifier.automatic_decision_allowed,
+        )
         self._store_evidence(run)
+        self._dispatch_review(run)
         return run
 
     def _store_evidence(self, run: VerificationRun) -> None:
         policy, sink = self.verifier.evidence_policy, self.verifier.evidence_sink
         if not policy.enabled:
             return
-        categories: list[str] = []
-        if not run.result.matched or not run.result.liveness.passed:
-            categories.append("failed")
-        if run.result.liveness.warnings:
-            categories.append("suspicious")
-        if not categories:
-            categories.append("passed")
+        categories = self._categories(run)
         categories = [category for category in categories if category in policy.capture_on]
         if not categories:
             return
@@ -86,20 +90,61 @@ class LiveVerification:
         )
         sink.store(event, artifacts)
 
+    def _dispatch_review(self, run: VerificationRun) -> None:
+        policy, sink = self.verifier.review_policy, self.verifier.review_sink
+        if not policy.enabled:
+            return
+        event = ReviewEvent.create(
+            event_id=uuid4().hex,
+            session_id=self.session_id,
+            profile=run.profile,
+            automatic_decision_allowed=run.automatic_decision_allowed,
+            matched=run.result.matched,
+            liveness_passed=run.result.liveness.passed,
+            similarity=run.result.similarity,
+            liveness_reasons=run.result.liveness.reasons,
+            liveness_warnings=run.result.liveness.warnings,
+        )
+        if event.disposition in policy.dispatch_on:
+            sink.publish(event)
+
+    @staticmethod
+    def _categories(run: VerificationRun) -> list[str]:
+        categories: list[str] = []
+        if not run.result.matched or not run.result.liveness.passed:
+            categories.append("failed")
+        if run.result.liveness.warnings:
+            categories.append("suspicious")
+        return categories or ["passed"]
+
 
 class LivenessVerifier:
     """Reusable verifier. A caller owns UI prompts and supplies timestamped BGR frames."""
 
     def __init__(self, reference_extractor: ReferenceExtractor, evidence_builder: FrameEvidenceBuilder,
                  policy: LivenessPolicy | None = None, *, evidence_policy: EvidencePolicy | None = None,
-                 evidence_sink: EvidenceSink | None = None) -> None:
+                 evidence_sink: EvidenceSink | None = None, profile: VerificationProfile | None = None,
+                 review_policy: ReviewPolicy | None = None, review_sink: ReviewSink | None = None) -> None:
+        if policy is not None and profile is not None:
+            raise ValueError("pass either policy or profile, not both")
         self.reference_extractor = reference_extractor
         self.evidence_builder = evidence_builder
-        self.policy = policy or LivenessPolicy()
+        if profile is not None:
+            self.policy = profile.policy
+            self.profile_name = profile.name.value
+            self.automatic_decision_allowed = profile.allows_automatic_decision
+        else:
+            self.policy = policy or LivenessPolicy()
+            self.profile_name = VerificationProfileName.STRICT.value if policy is None else "custom"
+            self.automatic_decision_allowed = True
         self.evidence_policy = evidence_policy or EvidencePolicy()
         self.evidence_sink = evidence_sink
+        self.review_policy = review_policy or ReviewPolicy()
+        self.review_sink = review_sink
         if self.evidence_policy.enabled and evidence_sink is None:
             raise ValueError("an evidence_sink is required when evidence capture is enabled")
+        if self.review_policy.enabled and review_sink is None:
+            raise ValueError("a review_sink is required when review dispatch is enabled")
 
     @classmethod
     def from_model_pack(cls, name: str, *, manager: object, factory: Callable[[object], "LivenessVerifier"],
