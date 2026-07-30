@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Face Liveness Check · Integration Demo</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">LOCAL INTEGRATION DEMO</p>
+        <h1>Face Liveness Check</h1>
+        <p class="lede">Upload a reference portrait, complete a randomized activity sequence, and inspect the result from the Python package.</p>
+      </section>
+
+      <section class="notice">
+        <span class="notice-dot"></span>
+        Frames are sent only to this local server for in-memory processing. This demo does not retain evidence.
+      </section>
+
+      <section class="grid">
+        <section class="card setup-card">
+          <p class="step">01 · Reference</p>
+          <h2>Choose a portrait</h2>
+          <label class="upload" for="reference-input">
+            <input id="reference-input" type="file" accept="image/png,image/jpeg,image/webp">
+            <span class="upload-icon">+</span>
+            <span><strong>Select image</strong><small>PNG, JPEG, or WebP · one face only</small></span>
+          </label>
+          <div id="reference-name" class="filename">No portrait selected</div>
+          <button id="start-button" class="primary" disabled>Start camera session</button>
+        </section>
+
+        <section class="card camera-card">
+          <div class="camera-header">
+            <div>
+              <p class="step">02 · Live stream</p>
+              <h2>Complete the prompts</h2>
+            </div>
+            <span id="camera-status" class="status idle">Idle</span>
+          </div>
+          <div class="video-wrap">
+            <video id="video" autoplay muted playsinline></video>
+            <div id="video-placeholder" class="video-placeholder">Camera preview appears here</div>
+          </div>
+          <ol id="challenges" class="challenges"><li>Start a session to receive randomized prompts.</li></ol>
+          <div class="camera-actions">
+            <button id="finish-button" class="secondary" disabled>Finish and verify</button>
+            <span id="frame-count">0 frames analysed</span>
+          </div>
+        </section>
+      </section>
+
+      <section id="result-card" class="card result-card hidden" aria-live="polite">
+        <div class="result-heading">
+          <div>
+            <p class="step">03 · Result</p>
+            <h2 id="result-title">Session result</h2>
+          </div>
+          <span id="result-badge" class="result-badge">—</span>
+        </div>
+        <div class="metrics">
+          <div><span>Identity match</span><strong id="metric-match">—</strong></div>
+          <div><span>Similarity</span><strong id="metric-similarity">—</strong></div>
+          <div><span>Liveness confidence</span><strong id="metric-confidence">—</strong></div>
+        </div>
+        <div id="result-details" class="details"></div>
+      </section>
+    </main>
+    <canvas id="capture-canvas" hidden></canvas>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
