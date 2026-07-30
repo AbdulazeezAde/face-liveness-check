@@ -20,6 +20,7 @@ from .session import LivenessSession
 class VerificationRun:
     result: VerificationResult
     challenges: tuple[str, ...]
+    evidence_session_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -46,7 +47,8 @@ class LiveVerification:
                 self._evidence_frames.popleft()
 
     def finish(self) -> VerificationRun:
-        run = VerificationRun(self.session.compare(self.reference_embedding), self.challenges)
+        evidence_session_id = self.session_id if self.verifier.evidence_policy.enabled else None
+        run = VerificationRun(self.session.compare(self.reference_embedding), self.challenges, evidence_session_id)
         self._store_evidence(run)
         return run
 

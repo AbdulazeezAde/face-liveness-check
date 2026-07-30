@@ -1,6 +1,6 @@
 """Composable liveness and face-verification orchestration."""
 
-from .models import Challenge, FrameEvidence, LivenessPolicy, LivenessResult, PassiveAntiSpoofMode, VerificationResult
+from .models import Challenge, FrameEvidence, LivenessPolicy, LivenessResult, PassiveAntiSpoofMode, VerificationResult, active_first_policy
 from .session import LivenessSession
 from .adapters import FaceDetection, MediaPipeLandmarkEstimator, OnnxArcFaceEmbedder, OnnxPassiveAntiSpoof, OpenCVSFaceAligner, OpenCVSFaceEmbedder, OpenCVYuNetDetector
 from .activity import ActivityConfig, LandmarkActivityDetector
@@ -16,6 +16,7 @@ from .evidence import EvidenceArtifact, EvidenceEvent, EvidencePolicy, EvidenceS
 __all__ = [
     "Challenge",
     "ActivityConfig",
+    "active_first_policy",
     "FaceDetection",
     "EvidenceArtifact",
     "EvidenceEvent",
@@ -65,4 +66,4 @@ __all__ = [
     "verify_webcam",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.0rc1"

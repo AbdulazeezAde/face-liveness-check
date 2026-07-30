@@ -1,4 +1,5 @@
 import hashlib
+from importlib.metadata import version
 
 import numpy as np
 import pytest
@@ -24,6 +25,7 @@ from face_liveness_check import (
     PassiveAntiSpoofMode,
     S3EvidenceSink,
     append_observation,
+    active_first_policy,
     summarize_observations,
 )
 from face_liveness_check.adapters import FaceDetection, OnnxPassiveAntiSpoof
@@ -31,6 +33,12 @@ from face_liveness_check.activity import ActivityConfig, LandmarkActivityDetecto
 from face_liveness_check.cli import build_parser
 from face_liveness_check.pipeline import ReferenceExtractor
 from face_liveness_check.verifier import LivenessVerifier
+
+
+def test_public_version_matches_installed_package_metadata():
+    import face_liveness_check
+
+    assert face_liveness_check.__version__ == version("face-liveness-check")
 
 
 def _evidence(timestamp, motion=None, embedding=None):
@@ -90,6 +98,13 @@ def test_advisory_passive_pad_warns_without_failing_active_liveness():
 
     assert result.passed
     assert result.warnings == ("passive anti-spoof check is suspicious",)
+
+
+def test_active_first_policy_keeps_secure_default_thresholds_but_makes_pad_advisory():
+    policy = active_first_policy(challenge_count=2)
+
+    assert policy.challenge_count == 2
+    assert policy.passive_antispoof_mode is PassiveAntiSpoofMode.ADVISORY
 
 
 def test_face_detection_crop_and_pad_logits_are_normalized():
@@ -314,13 +329,19 @@ def test_reference_crop_requires_one_face_without_opencv_runtime():
 def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
     parser = build_parser()
     install = parser.parse_args(["models", "install", "opencv-default", "--accept-model-license"])
-    webcam = parser.parse_args(["webcam", "id.png", "--download", "--duration", "12"])
+    webcam = parser.parse_args([
+        "webcam", "id.png", "--download", "--duration", "12", "--pad-advisory",
+        "--evidence-local-dir", "evidence", "--evidence-consent", "--evidence-capture-face-crops",
+    ])
     evaluation = parser.parse_args(["evaluate-webcam", "--label", "replay", "--output", "scores.jsonl", "--candidate", "facenox_experimental"])
 
     assert install.name == "opencv-default"
     assert install.accept_model_license
     assert webcam.reference.name == "id.png"
     assert webcam.duration == 12
+    assert webcam.pad_advisory
+    assert webcam.evidence_local_dir.name == "evidence"
+    assert webcam.evidence_capture_face_crops
     assert evaluation.label == "replay"
     assert evaluation.output.name == "scores.jsonl"
     assert evaluation.candidate == ["facenox_experimental"]
