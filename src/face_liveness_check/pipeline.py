@@ -46,12 +46,16 @@ class FrameEvidenceBuilder:
         aligner: FaceAligner | None = None,
         landmarks: LandmarkEstimator | None = None,
         activity: LandmarkActivityDetector | None = None,
+        pad_crop_scale: float = 1.2,
         tracking_id_factory: Callable[[np.ndarray], str | None] | None = None,
     ) -> None:
         if (landmarks is None) != (activity is None):
             raise ValueError("landmarks and activity detector must be configured together")
+        if pad_crop_scale < 1.0:
+            raise ValueError("pad_crop_scale must be at least 1.0")
         self.detector, self.embedder, self.anti_spoof = detector, embedder, anti_spoof
         self.aligner, self.landmarks, self.activity = aligner, landmarks, activity
+        self.pad_crop_scale = pad_crop_scale
         self.tracking_id_factory = tracking_id_factory
 
     def build(self, frame_bgr: np.ndarray, timestamp_s: float) -> FrameEvidence:
@@ -61,6 +65,7 @@ class FrameEvidenceBuilder:
             return FrameEvidence(timestamp_s, len(detections), None, 0.0, 0.0, None, frame_fingerprint=fingerprint)
         detection = detections[0]
         face = self.aligner.align(frame_bgr, detection) if self.aligner else detection.crop(frame_bgr, padding=0.10)
+        pad_face = detection.crop(frame_bgr, padding=(self.pad_crop_scale - 1.0) / 2.0)
         light, sharpness = lighting_score(face), blur_score(face)
         motion = self.activity.observe(self.landmarks.estimate(face)) if self.activity and self.landmarks else None
         return FrameEvidence(
@@ -69,7 +74,7 @@ class FrameEvidenceBuilder:
             tracking_id=self.tracking_id_factory(face) if self.tracking_id_factory else None,
             quality_score=min(light, sharpness),
             lighting_score=light,
-            passive_antispoof_score=self.anti_spoof.score(face),
+            passive_antispoof_score=self.anti_spoof.score(pad_face),
             motion=motion,
             embedding=self.embedder.embed(face),
             frame_fingerprint=fingerprint,

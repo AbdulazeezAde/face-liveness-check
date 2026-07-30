@@ -21,11 +21,18 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "platformdirs>=4.0"]
+
+[project.scripts]
+face-liveness-check = "face_liveness_check.cli:main"
 
 [project.optional-dependencies]
-opencv = ["opencv-python-headless>=4.8"]
+opencv = ["opencv-python>=4.8"]
+opencv-headless = ["opencv-python-headless>=4.8"]
 onnx = ["onnxruntime>=1.17", "opencv-python-headless>=4.8"]
+mediapipe = ["mediapipe>=0.10"]
+documents = ["PyMuPDF>=1.24"]
+full = ["opencv-python>=4.8", "onnxruntime>=1.17", "mediapipe>=0.10", "PyMuPDF>=1.24"]
 dev = ["pytest>=8", "build>=1.2"]
 
 [project.urls]
