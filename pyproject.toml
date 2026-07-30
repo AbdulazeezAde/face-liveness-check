@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "face-liveness-check"
-version = "0.1.0rc1"
+version = "0.1.0"
 description = "Composable face liveness and identity-verification orchestration for Python."
 readme = "README.md"
 requires-python = ">=3.10"
