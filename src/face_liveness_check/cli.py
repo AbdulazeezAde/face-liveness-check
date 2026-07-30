@@ -1,4 +1,4 @@
-"""Command-line model management, reference extraction, and webcam demo."""
+"""Opt-in command-line model management, reference extraction, and webcam tools."""
 
 from __future__ import annotations
 

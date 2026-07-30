@@ -126,7 +126,10 @@ def create_app(config: DemoConfig | None = None) -> Any:
         from fastapi import FastAPI, File, HTTPException, UploadFile
         from fastapi.responses import FileResponse
     except ImportError as error:  # pragma: no cover - dependency error is environment-specific
-        raise ImportError("Install the demo dependencies: pip install 'face-liveness-check[full,demo]'") from error
+        raise ImportError(
+            "Install this checkout's demo dependencies: "
+            "python -m pip install -r examples/web_demo/requirements.txt"
+        ) from error
 
     service = DemoService(config or DemoConfig())
     app = FastAPI(title="Face Liveness Check Demo", docs_url=None, redoc_url=None)
@@ -183,7 +186,7 @@ async def _read_bgr(upload: Any) -> np.ndarray:
     try:
         import cv2
     except ImportError as error:  # pragma: no cover - dependency error is environment-specific
-        raise ValueError("OpenCV is required; install face-liveness-check[full,demo]") from error
+        raise ValueError("OpenCV is required; from the checkout run: python -m pip install -e '.[full]'") from error
     image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("upload must be a valid image")
@@ -221,7 +224,10 @@ def main() -> None:
     try:
         import uvicorn
     except ImportError as error:  # pragma: no cover - dependency error is environment-specific
-        raise SystemExit("Install the demo dependencies: pip install 'face-liveness-check[full,demo]'") from error
+        raise SystemExit(
+            "Install this checkout's demo dependencies: "
+            "python -m pip install -r examples/web_demo/requirements.txt"
+        ) from error
     uvicorn.run(
         create_app(DemoConfig(arguments.cache_dir, download_models=arguments.download_models,
                               accept_model_license=arguments.accept_model_license)),
