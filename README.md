@@ -183,7 +183,14 @@ portrait is displayed on a separate screen, or `print` for a printed portrait.
 ```bash
 face-liveness-check evaluate-webcam --label genuine --output pad-scores.jsonl --download --accept-model-license
 face-liveness-check evaluate-webcam --label replay --output pad-scores.jsonl --download --accept-model-license
+face-liveness-check calibrate-pad --input pad-scores.jsonl --candidate facenox_experimental
 ```
+
+Calibration averages repeated frames by sample ID, refuses an under-sized label
+set, and produces a proposal only when the chosen targets are observed. It does
+not certify a model or replace a held-out deployment evaluation. See the
+[PAD evaluation protocol](docs/PAD_EVALUATION_PROTOCOL.md) for the consent,
+split, calibration, and approval record requirements.
 
 ## Command-line tools
 
@@ -249,6 +256,17 @@ retention deadline. For AWS, install `face-liveness-check[evidence-s3]` and use
 Bucket lifecycle rules, IAM access, KMS permissions, consent, and regional
 biometric-data obligations remain the integrator's responsibility.
 
+Use the evidence retention command as a dry run before enabling deletion:
+
+```powershell
+face-liveness-check evidence-retention --evidence-local-dir .\encrypted-evidence
+face-liveness-check evidence-retention --evidence-local-dir .\encrypted-evidence --apply
+```
+
+The full [evidence operations runbook](docs/EVIDENCE_OPERATIONS.md) includes
+key-rotation safeguards, an S3 lifecycle example, least-privilege IAM guidance,
+and audit expectations.
+
 The webcam CLI exposes the same local flow without ever placing the key in shell
 history. Generate and store a Fernet key in your secret manager, then expose it
 to the process as an environment variable. `--pad-advisory` makes low PAD scores
@@ -267,6 +285,9 @@ The verified TestPyPI candidate is `0.1.0rc1`; the next production release is
 `0.1.0`. CI tests Python 3.10 through 3.12, builds both distributions, and
 checks their metadata. A tag such as `v0.1.0rc1` triggers TestPyPI publishing;
 a published GitHub Release for `v0.1.0` triggers the production PyPI workflow.
+The CI pipeline also runs linting, core static typing, a coverage report, and a
+Docker build for the development-only browser demo. Follow the
+[release checklist](docs/RELEASE_CHECKLIST.md) before publishing.
 
 Before publishing, create Trusted Publishers in TestPyPI and PyPI with these
 exact values:

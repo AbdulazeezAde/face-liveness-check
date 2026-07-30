@@ -1,5 +1,7 @@
 import hashlib
 from importlib.metadata import version
+import json
+from datetime import datetime, timezone
 
 import numpy as np
 import pytest
@@ -9,6 +11,7 @@ from face_liveness_check import (
     EvidenceArtifact,
     EvidenceEvent,
     EvidencePolicy,
+    EvidenceRetentionResult,
     FrameEvidence,
     LivenessPolicy,
     LivenessSession,
@@ -20,6 +23,7 @@ from face_liveness_check import (
     default_registry,
     extract_reference_face_crop,
     PadCandidate,
+    PadCalibrationResult,
     PadEvaluator,
     PadLabel,
     PassiveAntiSpoofMode,
@@ -30,6 +34,7 @@ from face_liveness_check import (
     active_first_profile,
     append_observation,
     active_first_policy,
+    calibrate_thresholds,
     evaluation_profile,
     strict_profile,
     summarize_observations,
@@ -434,6 +439,8 @@ def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
         "--evidence-local-dir", "evidence", "--evidence-consent", "--evidence-capture-face-crops",
     ])
     evaluation = parser.parse_args(["evaluate-webcam", "--label", "replay", "--output", "scores.jsonl", "--candidate", "facenox_experimental"])
+    calibration = parser.parse_args(["calibrate-pad", "--input", "scores.jsonl", "--candidate", "facenox_experimental"])
+    retention = parser.parse_args(["evidence-retention", "--evidence-local-dir", "evidence"])
 
     assert install.name == "opencv-default"
     assert install.accept_model_license
@@ -445,6 +452,10 @@ def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
     assert evaluation.label == "replay"
     assert evaluation.output.name == "scores.jsonl"
     assert evaluation.candidate == ["facenox_experimental"]
+    assert calibration.input.name == "scores.jsonl"
+    assert calibration.candidate == ["facenox_experimental"]
+    assert retention.evidence_local_dir.name == "evidence"
+    assert not retention.apply
 
 
 def test_pad_evaluation_records_scores_without_source_paths(tmp_path):
@@ -462,3 +473,49 @@ def test_pad_evaluation_records_scores_without_source_paths(tmp_path):
 
     with pytest.raises(ValueError, match="not a file path"):
         evaluator.observe(np.zeros((4, 4, 3), dtype=np.uint8), sample_id="C:/id.jpg", label=PadLabel.GENUINE)
+
+
+def test_pad_calibration_uses_distinct_samples_and_withholds_small_datasets(tmp_path):
+    records = []
+    for label, score in (("genuine", .9), ("print", .1), ("replay", .1), ("mask", .1)):
+        for index in range(2):
+            records.append({"sample_id": f"{label}-{index}", "label": label, "scores": {"candidate": score}})
+    path = tmp_path / "scores.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+
+    withheld = calibrate_thresholds(path, minimum_samples_per_label=3)
+    proposed = calibrate_thresholds(path, minimum_samples_per_label=2)
+
+    assert isinstance(withheld["candidate"], PadCalibrationResult)
+    assert not withheld["candidate"].eligible
+    assert proposed["candidate"].eligible
+    assert proposed["candidate"].threshold == .9
+    assert proposed["candidate"].metrics.attack_reject_rate == 1.0
+
+
+def test_local_evidence_retention_is_dry_run_by_default_and_skips_indefinite_records(tmp_path):
+    pytest.importorskip("cryptography.fernet")
+    from face_liveness_check import LocalEncryptedEvidenceSink
+
+    sink = LocalEncryptedEvidenceSink(tmp_path / "evidence", LocalEncryptedEvidenceSink.generate_key())
+    expired = EvidenceEvent(
+        session_id="expired_001", created_at="2025-01-01T00:00:00+00:00", categories=("failed",),
+        matched=False, liveness_passed=False, similarity=None, liveness_reasons=("failed",),
+        liveness_warnings=(), retention_days=1,
+    )
+    indefinite = EvidenceEvent(
+        session_id="indefinite_001", created_at="2025-01-01T00:00:00+00:00", categories=("failed",),
+        matched=False, liveness_passed=False, similarity=None, liveness_reasons=("failed",),
+        liveness_warnings=(), retention_days=None,
+    )
+    sink.store(expired, [])
+    sink.store(indefinite, [])
+
+    preview = sink.purge_expired(now=datetime(2025, 1, 3, tzinfo=timezone.utc))
+    applied = sink.purge_expired(dry_run=False, now=datetime(2025, 1, 3, tzinfo=timezone.utc))
+
+    assert isinstance(preview, EvidenceRetentionResult)
+    assert preview.dry_run and preview.plan.eligible_session_ids == ("expired_001",)
+    assert not (tmp_path / "evidence" / "expired_001").exists()
+    assert applied.removed_session_ids == ("expired_001",)
+    assert (tmp_path / "evidence" / "indefinite_001").exists()

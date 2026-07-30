@@ -9,10 +9,11 @@ from __future__ import annotations
 import io
 import json
 import re
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+import shutil
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Protocol, Sequence, cast
 
 import numpy as np
 
@@ -102,10 +103,43 @@ class EvidenceArtifact:
             raise ValueError("evidence artifact requires content type and data")
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceRetentionPlan:
+    """A transparent, auditable plan for local evidence retention handling."""
+
+    evaluated_at: str
+    eligible_session_ids: tuple[str, ...]
+    retained_session_ids: tuple[str, ...]
+    skipped_session_ids: tuple[str, ...]
+
+    def to_record(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceRetentionResult:
+    """Result of a dry-run or explicit retention deletion operation."""
+
+    dry_run: bool
+    plan: EvidenceRetentionPlan
+    removed_session_ids: tuple[str, ...]
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "dry_run": self.dry_run,
+            "plan": self.plan.to_record(),
+            "removed_session_ids": list(self.removed_session_ids),
+        }
+
+
 class EvidenceSink(Protocol):
     """Destination for metadata and optional evidence; implementations own storage."""
 
     def store(self, event: EvidenceEvent, artifacts: Sequence[EvidenceArtifact]) -> None: ...
+
+
+class _S3Client(Protocol):
+    def put_object(self, **kwargs: object) -> object: ...
 
 
 class LocalEncryptedEvidenceSink:
@@ -122,6 +156,7 @@ class LocalEncryptedEvidenceSink:
         except ImportError as error:  # pragma: no cover - depends on extras
             raise ImportError("Install local evidence support: pip install 'face-liveness-check[evidence-local]'") from error
         self.directory = Path(directory)
+        self._Fernet = Fernet
         self._fernet = Fernet(key.encode("ascii") if isinstance(key, str) else key)
 
     @staticmethod
@@ -130,7 +165,7 @@ class LocalEncryptedEvidenceSink:
             from cryptography.fernet import Fernet
         except ImportError as error:  # pragma: no cover - depends on extras
             raise ImportError("Install local evidence support: pip install 'face-liveness-check[evidence-local]'") from error
-        return Fernet.generate_key()
+        return cast(bytes, Fernet.generate_key())
 
     def store(self, event: EvidenceEvent, artifacts: Sequence[EvidenceArtifact]) -> None:
         _validate_opaque_id(event.session_id)
@@ -140,6 +175,70 @@ class LocalEncryptedEvidenceSink:
         for artifact in artifacts:
             _write_atomic(destination / f"{artifact.name}.npy.fernet", self._fernet.encrypt(artifact.data))
 
+    def plan_retention(self, *, now: datetime | None = None) -> EvidenceRetentionPlan:
+        """Read encrypted event metadata and identify sessions past retention.
+
+        No files are changed. Directories without a valid encrypted event record,
+        or without an explicit retention deadline, are deliberately skipped.
+        """
+        evaluated_at = now or datetime.now(timezone.utc)
+        if evaluated_at.tzinfo is None:
+            raise ValueError("now must be timezone-aware")
+        eligible: list[str] = []
+        retained: list[str] = []
+        skipped: list[str] = []
+        if not self.directory.exists():
+            return EvidenceRetentionPlan(evaluated_at.isoformat(), (), (), ())
+        for session_dir in sorted(self.directory.iterdir()):
+            if not session_dir.is_dir() or not _OPAQUE_ID.fullmatch(session_dir.name):
+                continue
+            try:
+                event = self._read_event(session_dir)
+                if event.session_id != session_dir.name or event.retention_days is None:
+                    skipped.append(session_dir.name)
+                    continue
+                created_at = datetime.fromisoformat(event.created_at.replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    skipped.append(session_dir.name)
+                    continue
+                if created_at + timedelta(days=event.retention_days) <= evaluated_at:
+                    eligible.append(session_dir.name)
+                else:
+                    retained.append(session_dir.name)
+            except (OSError, ValueError, json.JSONDecodeError, TypeError):
+                skipped.append(session_dir.name)
+        return EvidenceRetentionPlan(evaluated_at.isoformat(), tuple(eligible), tuple(retained), tuple(skipped))
+
+    def purge_expired(self, *, dry_run: bool = True, now: datetime | None = None) -> EvidenceRetentionResult:
+        """Delete only explicitly expired sessions; defaults to a non-mutating preview."""
+        plan = self.plan_retention(now=now)
+        if dry_run:
+            return EvidenceRetentionResult(True, plan, ())
+        removed: list[str] = []
+        root = self.directory.resolve()
+        for session_id in plan.eligible_session_ids:
+            destination = (self.directory / session_id).resolve()
+            if destination.parent != root or not destination.is_dir():
+                continue
+            shutil.rmtree(destination)
+            removed.append(session_id)
+        return EvidenceRetentionResult(False, plan, tuple(removed))
+
+    def _read_event(self, session_dir: Path) -> EvidenceEvent:
+        encrypted = (session_dir / "event.json.fernet").read_bytes()
+        payload = json.loads(cast(bytes, self._fernet.decrypt(encrypted)))
+        return EvidenceEvent(
+            session_id=payload["session_id"],
+            created_at=payload["created_at"],
+            categories=tuple(payload["categories"]),
+            matched=bool(payload["matched"]),
+            liveness_passed=bool(payload["liveness_passed"]),
+            similarity=payload["similarity"],
+            liveness_reasons=tuple(payload["liveness_reasons"]),
+            liveness_warnings=tuple(payload["liveness_warnings"]),
+            retention_days=payload["retention_days"],
+        )
+
 
 class S3EvidenceSink:
     """Store evidence in S3 with mandatory SSE-KMS encryption.
@@ -148,7 +247,7 @@ class S3EvidenceSink:
     lifecycle deletion, and KMS-key access remain the integrator's responsibility.
     """
 
-    def __init__(self, bucket: str, *, kms_key_id: str, prefix: str = "face-liveness-evidence", client: object | None = None) -> None:
+    def __init__(self, bucket: str, *, kms_key_id: str, prefix: str = "face-liveness-evidence", client: _S3Client | None = None) -> None:
         if not bucket or not kms_key_id:
             raise ValueError("bucket and kms_key_id are required for encrypted S3 evidence")
         self.bucket = bucket
@@ -161,7 +260,7 @@ class S3EvidenceSink:
                 import boto3
             except ImportError as error:  # pragma: no cover - depends on extras
                 raise ImportError("Install S3 evidence support: pip install 'face-liveness-check[evidence-s3]'") from error
-            client = boto3.client("s3")
+            client = cast(_S3Client, boto3.client("s3"))
         self._client = client
 
     def store(self, event: EvidenceEvent, artifacts: Sequence[EvidenceArtifact]) -> None:

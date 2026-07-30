@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from .adapters import OnnxPassiveAntiSpoof, OpenCVYuNetDetector
 from .evidence import EvidencePolicy, LocalEncryptedEvidenceSink
-from .evaluation import PadCandidate, PadEvaluator, PadLabel, append_observation, summarize_observations
+from .evaluation import PadCandidate, PadEvaluator, PadLabel, append_observation, calibrate_thresholds, summarize_observations
 from .model_packs import ModelPackManager, default_registry
 from .models import active_first_profile
 from .presets import create_opencv_verifier_from_pack
@@ -67,6 +67,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate.add_argument("--no-preview", action="store_true", help="do not open an OpenCV preview window")
     _model_source_options(evaluate)
+
+    calibrate = subcommands.add_parser(
+        "calibrate-pad",
+        help="propose PAD thresholds from score-only labelled JSONL; never uploads sample data",
+    )
+    calibrate.add_argument("--input", required=True, type=Path, help="score-only JSONL produced by evaluate-webcam")
+    calibrate.add_argument("--candidate", action="append", help="candidate name to calibrate; repeat as needed")
+    calibrate.add_argument("--target-genuine-accept-rate", type=float, default=.95)
+    calibrate.add_argument("--target-attack-reject-rate", type=float, default=.95)
+    calibrate.add_argument("--minimum-samples-per-label", type=int, default=20)
+
+    retention = subcommands.add_parser(
+        "evidence-retention",
+        help="preview or apply local encrypted-evidence retention deletion",
+    )
+    retention.add_argument("--evidence-local-dir", required=True, type=Path)
+    retention.add_argument("--evidence-key-env", default="FACE_LIVENESS_EVIDENCE_KEY")
+    retention.add_argument("--apply", action="store_true", help="delete only sessions identified by the retention preview")
     return parser
 
 
@@ -77,6 +95,23 @@ def main(argv: list[str] | None = None) -> int:
         return _run_models(args, manager)
     if args.command == "evaluate-webcam":
         return _run_pad_evaluation(args, manager)
+    if args.command == "calibrate-pad":
+        result = calibrate_thresholds(
+            args.input,
+            candidates=args.candidate,
+            target_genuine_accept_rate=args.target_genuine_accept_rate,
+            target_attack_reject_rate=args.target_attack_reject_rate,
+            minimum_samples_per_label=args.minimum_samples_per_label,
+        )
+        print(json.dumps({name: calibration.to_record() for name, calibration in result.items()}, indent=2))
+        return 0 if all(calibration.eligible for calibration in result.values()) else 2
+    if args.command == "evidence-retention":
+        key = os.environ.get(args.evidence_key_env)
+        if not key:
+            raise ValueError(f"set the Fernet key in environment variable {args.evidence_key_env}")
+        result = LocalEncryptedEvidenceSink(args.evidence_local_dir, key).purge_expired(dry_run=not args.apply)
+        print(json.dumps(result.to_record(), indent=2))
+        return 0
     installed = _resolve_pack(args, manager)
     if args.command == "extract":
         destination = extract_reference_face_crop_file(

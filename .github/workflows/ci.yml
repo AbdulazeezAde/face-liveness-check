@@ -27,6 +27,42 @@ jobs:
       - run: python -m pip install ".[dev]"
       - run: pytest
 
+  quality:
+    name: Lint and static typing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ".[dev]"
+      - run: ruff check src tests
+      # Optional OpenCV/ONNX adapters are deliberately not installed by the
+      # lightweight dev extra. Keep this gate focused on the typed core.
+      - run: mypy --follow-imports=skip src/face_liveness_check/evaluation.py src/face_liveness_check/evidence.py
+
+  coverage:
+    name: Coverage (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install ".[dev]"
+      - run: pytest --cov=face_liveness_check --cov-report=term-missing --cov-report=xml:coverage.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python-3.12
+          path: coverage.xml
+          if-no-files-found: error
+
   package:
     name: Build and validate distributions
     runs-on: ubuntu-latest
@@ -40,3 +76,10 @@ jobs:
       - run: python -m pip install --upgrade pip build twine
       - run: python -m build
       - run: twine check dist/*
+
+  docker-demo:
+    name: Build browser demo image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: docker build --file examples/web_demo/Dockerfile --tag face-liveness-check-demo:ci .

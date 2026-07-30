@@ -10,8 +10,8 @@ from .model_packs import ModelArtifact, ModelPack, ModelPackError, ModelPackMana
 from .presets import create_opencv_verifier, create_opencv_verifier_from_pack
 from .reference_io import extract_reference_face_crop, extract_reference_face_crop_file, load_reference_image_bgr
 from .webcam import verify_webcam
-from .evaluation import PadCandidate, PadEvaluator, PadLabel, PadObservation, append_observation, summarize_observations
-from .evidence import EvidenceArtifact, EvidenceEvent, EvidencePolicy, EvidenceSink, LocalEncryptedEvidenceSink, S3EvidenceSink
+from .evaluation import PadCalibrationResult, PadCandidate, PadEvaluator, PadLabel, PadObservation, PadThresholdMetrics, append_observation, calibrate_thresholds, summarize_observations
+from .evidence import EvidenceArtifact, EvidenceEvent, EvidencePolicy, EvidenceRetentionPlan, EvidenceRetentionResult, EvidenceSink, LocalEncryptedEvidenceSink, S3EvidenceSink
 from .review import ReviewEvent, ReviewPolicy, ReviewSink, WebhookReviewSink
 
 __all__ = [
@@ -23,6 +23,8 @@ __all__ = [
     "EvidenceArtifact",
     "EvidenceEvent",
     "EvidencePolicy",
+    "EvidenceRetentionPlan",
+    "EvidenceRetentionResult",
     "EvidenceSink",
     "facenox_pad_experimental_pack",
     "extract_reference_face_crop",
@@ -49,9 +51,11 @@ __all__ = [
     "OnnxPassiveAntiSpoof",
     "PassiveAntiSpoofMode",
     "PadCandidate",
+    "PadCalibrationResult",
     "PadEvaluator",
     "PadLabel",
     "PadObservation",
+    "PadThresholdMetrics",
     "OpenCVSFaceAligner",
     "OpenCVSFaceEmbedder",
     "OpenCVYuNetDetector",
@@ -60,6 +64,7 @@ __all__ = [
     "ReviewPolicy",
     "ReviewSink",
     "append_observation",
+    "calibrate_thresholds",
     "load_reference_image_bgr",
     "research_default_pack",
     "summarize_observations",

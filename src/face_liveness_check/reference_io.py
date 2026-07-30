@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .adapters import FaceDetection, FaceDetector
+from .adapters import FaceDetector
 
 
 def load_reference_image_bgr(path: str | Path, *, pdf_page: int = 0, dpi: int = 200) -> np.ndarray:
