@@ -1,0 +1,9 @@
+{
+  "fixture_id": "synthetic-prerecorded-frame-001",
+  "schema_version": 1,
+  "content_type": "image/png",
+  "subject": "synthetic non-biometric test pattern",
+  "consent": "not applicable: generated fixture contains no person or biometric data",
+  "purpose": "WebSocket binary-frame transport regression test",
+  "payload_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL+XAAAAABJRU5ErkJggg=="
+}

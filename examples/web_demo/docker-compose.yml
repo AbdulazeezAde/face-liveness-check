@@ -1,0 +1,12 @@
+services:
+  web-demo:
+    build:
+      context: ../..
+      dockerfile: examples/web_demo/Dockerfile
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - face-liveness-model-cache:/root/.cache/face-liveness-check/models
+
+volumes:
+  face-liveness-model-cache:

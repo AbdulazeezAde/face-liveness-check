@@ -1,5 +1,6 @@
 # Development-only dependencies for this repository example.
 # They are intentionally not exposed as a face-liveness-check package extra.
 fastapi>=0.115
+pydantic>=2.9
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9

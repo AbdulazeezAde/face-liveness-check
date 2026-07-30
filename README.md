@@ -85,6 +85,11 @@ Open <http://127.0.0.1:8000> and use the `--pad-advisory` behavior built into
 the example's active-first policy. See the demo README for the stream contract,
 configuration, and security boundaries.
 
+The example includes typed FastAPI/WebSocket contracts, a local-only Docker
+configuration, and replay-based transport tests using a prerecorded synthetic
+non-biometric fixture. It intentionally does not ship real face recordings in
+the public source distribution.
+
 ## Default model pack
 
 Weights are not bundled into the PyPI wheel. The supported `opencv-default` pack
