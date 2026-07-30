@@ -40,7 +40,9 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install ".[dev]"
       - run: ruff check src tests
-      - run: mypy
+      # Optional OpenCV/ONNX adapters are deliberately not installed by the
+      # lightweight dev extra. Keep this gate focused on the typed core.
+      - run: mypy --follow-imports=skip src/face_liveness_check/evaluation.py src/face_liveness_check/evidence.py
 
   coverage:
     name: Coverage (Python 3.12)

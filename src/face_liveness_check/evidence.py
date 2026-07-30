@@ -165,7 +165,7 @@ class LocalEncryptedEvidenceSink:
             from cryptography.fernet import Fernet
         except ImportError as error:  # pragma: no cover - depends on extras
             raise ImportError("Install local evidence support: pip install 'face-liveness-check[evidence-local]'") from error
-        return Fernet.generate_key()
+        return cast(bytes, Fernet.generate_key())
 
     def store(self, event: EvidenceEvent, artifacts: Sequence[EvidenceArtifact]) -> None:
         _validate_opaque_id(event.session_id)
@@ -226,7 +226,7 @@ class LocalEncryptedEvidenceSink:
 
     def _read_event(self, session_dir: Path) -> EvidenceEvent:
         encrypted = (session_dir / "event.json.fernet").read_bytes()
-        payload = json.loads(self._fernet.decrypt(encrypted))
+        payload = json.loads(cast(bytes, self._fernet.decrypt(encrypted)))
         return EvidenceEvent(
             session_id=payload["session_id"],
             created_at=payload["created_at"],
