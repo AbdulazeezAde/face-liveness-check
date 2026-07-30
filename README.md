@@ -199,10 +199,10 @@ face-liveness-check webcam id-portrait.png --pad-advisory `
 
 ## Release and TestPyPI
 
-The current candidate version is `0.1.0rc1`. CI tests Python 3.10 through 3.12,
-builds both distributions, and checks their metadata. A tag such as
-`v0.1.0rc1` triggers TestPyPI publishing; a published GitHub Release triggers
-the production PyPI workflow.
+The verified TestPyPI candidate is `0.1.0rc1`; the next production release is
+`0.1.0`. CI tests Python 3.10 through 3.12, builds both distributions, and
+checks their metadata. A tag such as `v0.1.0rc1` triggers TestPyPI publishing;
+a published GitHub Release for `v0.1.0` triggers the production PyPI workflow.
 
 Before publishing, create Trusted Publishers in TestPyPI and PyPI with these
 exact values:
