@@ -8,11 +8,14 @@ import pytest
 
 from face_liveness_check import (
     Challenge,
+    DocumentQuality,
+    DocumentType,
     EvidenceArtifact,
     EvidenceEvent,
     EvidencePolicy,
     EvidenceRetentionResult,
     FrameEvidence,
+    IdDocumentExtractor,
     LivenessPolicy,
     LivenessSession,
     ModelArtifact,
@@ -26,6 +29,8 @@ from face_liveness_check import (
     PadCalibrationResult,
     PadEvaluator,
     PadLabel,
+    NormalizedDocument,
+    OcrTextBlock,
     PassiveAntiSpoofMode,
     ReviewEvent,
     ReviewPolicy,
@@ -519,3 +524,39 @@ def test_local_evidence_retention_is_dry_run_by_default_and_skips_indefinite_rec
     assert not (tmp_path / "evidence" / "expired_001").exists()
     assert applied.removed_session_ids == ("expired_001",)
     assert (tmp_path / "evidence" / "indefinite_001").exists()
+
+
+def test_id_extractor_validates_passport_mrz_and_keeps_normalized_document_opt_in():
+    first = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<"
+    second = "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+
+    class Ocr:
+        def read(self, _image):
+            return (OcrTextBlock(first, .99), OcrTextBlock(second, .98))
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    image = np.zeros((100, 160, 3), dtype=np.uint8)
+    result = IdDocumentExtractor(Ocr(), normalizer=Normalizer(), detector=_OneFaceDetector()).extract(image)
+
+    assert result.document_type is DocumentType.PASSPORT_TD3
+    assert result.fields["document_number"].value == "L898902C3"
+    assert result.fields["document_number"].validated
+    assert result.fields["date_of_birth_yymmdd"].validated
+    assert result.portrait_crop_bgr.shape == (4, 4, 3)
+    assert result.normalized_document_bgr is None
+    assert not result.requires_manual_review
+
+
+def test_paddle_adapter_accepts_documented_prediction_shape_without_paddle_runtime():
+    from face_liveness_check.ocr import PaddleOcrEngine
+
+    class Runner:
+        def predict(self, _image):
+            return [{"res": {"rec_texts": ["FEDERAL REPUBLIC"], "rec_scores": [.96], "rec_polys": [[[1, 2], [3, 2], [3, 4], [1, 4]]]}}]
+
+    blocks = PaddleOcrEngine(Runner()).read(np.zeros((2, 2, 3), dtype=np.uint8))
+
+    assert blocks == (OcrTextBlock("FEDERAL REPUBLIC", .96, ((1.0, 2.0), (3.0, 2.0), (3.0, 4.0), (1.0, 4.0))),)

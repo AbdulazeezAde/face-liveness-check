@@ -12,6 +12,8 @@ from .reference_io import extract_reference_face_crop, extract_reference_face_cr
 from .webcam import verify_webcam
 from .evaluation import PadCalibrationResult, PadCandidate, PadEvaluator, PadLabel, PadObservation, PadThresholdMetrics, append_observation, calibrate_thresholds, summarize_observations
 from .evidence import EvidenceArtifact, EvidenceEvent, EvidencePolicy, EvidenceRetentionPlan, EvidenceRetentionResult, EvidenceSink, LocalEncryptedEvidenceSink, S3EvidenceSink
+from .id_document import DocumentNormalizer, DocumentQuality, DocumentType, ExtractedField, FieldSource, IdDocumentExtractor, IdExtractionResult, NormalizedDocument, OcrEngine, OcrTextBlock, PassportTd3Template
+from .ocr import PaddleOcrEngine
 from .review import ReviewEvent, ReviewPolicy, ReviewSink, WebhookReviewSink
 
 __all__ = [
@@ -26,6 +28,11 @@ __all__ = [
     "EvidenceRetentionPlan",
     "EvidenceRetentionResult",
     "EvidenceSink",
+    "DocumentNormalizer",
+    "DocumentQuality",
+    "DocumentType",
+    "ExtractedField",
+    "FieldSource",
     "facenox_pad_experimental_pack",
     "extract_reference_face_crop",
     "extract_reference_face_crop_file",
@@ -35,6 +42,8 @@ __all__ = [
     "LivenessResult",
     "LivenessSession",
     "LivenessVerifier",
+    "IdDocumentExtractor",
+    "IdExtractionResult",
     "LocalEncryptedEvidenceSink",
     "LiveVerification",
     "MediaPipeLandmarkEstimator",
@@ -49,7 +58,12 @@ __all__ = [
     "LandmarkActivityDetector",
     "OnnxArcFaceEmbedder",
     "OnnxPassiveAntiSpoof",
+    "NormalizedDocument",
+    "OcrEngine",
+    "OcrTextBlock",
+    "PaddleOcrEngine",
     "PassiveAntiSpoofMode",
+    "PassportTd3Template",
     "PadCandidate",
     "PadCalibrationResult",
     "PadEvaluator",

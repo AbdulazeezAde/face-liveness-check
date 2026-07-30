@@ -218,6 +218,30 @@ page and does not upload or retain ID images.
 face-liveness-check webcam id.pdf --download --accept-model-license
 ```
 
+## Optional ID document extraction
+
+The optional `IdDocumentExtractor` keeps document rectification, OCR, typed
+field extraction, and document portrait crops separate from the liveness
+decision. Its first template is passport TD3 MRZ extraction with checksum
+validation; country-specific card templates should be added one document
+version at a time and evaluated on consented data.
+
+```bash
+pip install "face-liveness-check[id-ocr]"
+```
+
+```python
+from face_liveness_check import IdDocumentExtractor, PaddleOcrEngine
+
+result = IdDocumentExtractor(PaddleOcrEngine()).extract("passport.pdf")
+if not result.requires_manual_review:
+    reference_portrait = result.portrait_crop_bgr
+```
+
+The extractor processes data locally and does not write document images, OCR
+text, fields, or crops. Read the [ID document extraction guide](docs/ID_DOCUMENT_EXTRACTION.md)
+before configuring a production OCR model or storing any extracted data.
+
 ## Optional evidence storage
 
 Evidence retention is disabled by default. To record only failed or suspicious
