@@ -35,6 +35,32 @@ memory. It does not write the input file, rectified document, or extracted PII.
 `return_normalized_document=True` is intentionally explicit because it returns
 a complete, sensitive document image to the caller.
 
+## Configurable card templates and barcodes
+
+For a versioned card layout, supply labels, required fields, and validators.
+This is a building block for country-specific templates; it is not a claim that
+all current or future national cards share the same layout.
+
+```python
+from face_liveness_check import LabelledCardTemplate
+
+template = LabelledCardTemplate(
+    {"document_number": ("DOCUMENT NO", "ID NO"), "full_name": ("FULL NAME",)},
+    required_fields=("document_number", "full_name"),
+    validators={"document_number": lambda value: value.isalnum() and 6 <= len(value) <= 24},
+)
+```
+
+`ZxingBarcodeReader` optionally decodes local QR and PDF417 payloads. The
+default CLI reports only barcode formats/counts; it requires the explicit
+`--include-barcode-text` flag to print sensitive payload contents. Use a
+document-specific parser to compare barcode claims with OCR/MRZ fields and send
+disagreements to manual review.
+
+```bash
+face-liveness-check extract-id passport.pdf --document-type passport_td3 --read-barcodes
+```
+
 ## OCR runtime and model provenance
 
 The default adapter uses the PaddleOCR 3.x `PaddleOCR(...).predict(...)` API

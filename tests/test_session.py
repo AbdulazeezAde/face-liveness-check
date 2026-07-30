@@ -8,6 +8,7 @@ import pytest
 
 from face_liveness_check import (
     Challenge,
+    BarcodePayload,
     DocumentQuality,
     DocumentType,
     EvidenceArtifact,
@@ -16,6 +17,8 @@ from face_liveness_check import (
     EvidenceRetentionResult,
     FrameEvidence,
     IdDocumentExtractor,
+    JsonBarcodeFieldParser,
+    LabelledCardTemplate,
     LivenessPolicy,
     LivenessSession,
     ModelArtifact,
@@ -446,6 +449,7 @@ def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
     evaluation = parser.parse_args(["evaluate-webcam", "--label", "replay", "--output", "scores.jsonl", "--candidate", "facenox_experimental"])
     calibration = parser.parse_args(["calibrate-pad", "--input", "scores.jsonl", "--candidate", "facenox_experimental"])
     retention = parser.parse_args(["evidence-retention", "--evidence-local-dir", "evidence"])
+    extract_id = parser.parse_args(["extract-id", "passport.png", "--document-type", "passport_td3", "--read-barcodes"])
 
     assert install.name == "opencv-default"
     assert install.accept_model_license
@@ -461,6 +465,9 @@ def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
     assert calibration.candidate == ["facenox_experimental"]
     assert retention.evidence_local_dir.name == "evidence"
     assert not retention.apply
+    assert extract_id.source.name == "passport.png"
+    assert extract_id.document_type == "passport_td3"
+    assert extract_id.read_barcodes
 
 
 def test_pad_evaluation_records_scores_without_source_paths(tmp_path):
@@ -560,3 +567,32 @@ def test_paddle_adapter_accepts_documented_prediction_shape_without_paddle_runti
     blocks = PaddleOcrEngine(Runner()).read(np.zeros((2, 2, 3), dtype=np.uint8))
 
     assert blocks == (OcrTextBlock("FEDERAL REPUBLIC", .96, ((1.0, 2.0), (3.0, 2.0), (3.0, 4.0), (1.0, 4.0))),)
+
+
+def test_labelled_card_template_and_barcode_conflicts_require_manual_review():
+    class Ocr:
+        def read(self, _image):
+            return (OcrTextBlock("NIN: 12345678901", .98), OcrTextBlock("FULL NAME", .95), OcrTextBlock("Ada Example", .96))
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    class Barcodes:
+        def read(self, _image):
+            return (BarcodePayload("QR", '{"nin":"99999999999"}'),)
+
+    template = LabelledCardTemplate(
+        {"nin": ("NIN",), "full_name": ("FULL NAME",)},
+        markers=("NIN",), required_fields=("nin", "full_name"),
+        validators={"nin": lambda value: value.isdigit() and len(value) == 11},
+    )
+    result = IdDocumentExtractor(
+        Ocr(), normalizer=Normalizer(), templates=(template,), barcode_reader=Barcodes(), barcode_field_parser=JsonBarcodeFieldParser(),
+    ).extract(np.zeros((20, 30, 3), dtype=np.uint8))
+
+    assert result.document_type is DocumentType.CARD
+    assert result.fields["nin"].value == "12345678901"
+    assert result.barcodes[0].format == "QR"
+    assert "barcode value conflicts with extracted field: nin" in result.warnings
+    assert result.requires_manual_review

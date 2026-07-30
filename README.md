@@ -238,6 +238,10 @@ if not result.requires_manual_review:
     reference_portrait = result.portrait_crop_bgr
 ```
 
+Use `face-liveness-check extract-id passport.pdf --document-type passport_td3`
+for a local CLI result. Add `--read-barcodes` to decode QR/PDF417 where
+available; barcode text stays out of terminal output unless explicitly requested.
+
 The extractor processes data locally and does not write document images, OCR
 text, fields, or crops. Read the [ID document extraction guide](docs/ID_DOCUMENT_EXTRACTION.md)
 before configuring a production OCR model or storing any extracted data.
