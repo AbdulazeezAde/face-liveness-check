@@ -12,6 +12,7 @@ from .adapters import (
     OpenCVSFaceEmbedder,
     OpenCVYuNetDetector,
 )
+from .evidence import EvidencePolicy, EvidenceSink
 from .models import LivenessPolicy
 from .model_packs import InstalledModelPack
 from .pipeline import FrameEvidenceBuilder, ReferenceExtractor
@@ -25,6 +26,8 @@ def create_opencv_verifier(
     pad_model: str | Path,
     face_landmarker_model: str | Path,
     policy: LivenessPolicy | None = None,
+    evidence_policy: EvidencePolicy | None = None,
+    evidence_sink: EvidenceSink | None = None,
 ) -> LivenessVerifier:
     """Create the supported full liveness stack.
 
@@ -54,11 +57,19 @@ def create_opencv_verifier(
         activity=activity,
         pad_crop_scale=2.7,
     )
-    return LivenessVerifier(reference_extractor, evidence_builder, policy)
+    return LivenessVerifier(
+        reference_extractor,
+        evidence_builder,
+        policy,
+        evidence_policy=evidence_policy,
+        evidence_sink=evidence_sink,
+    )
 
 
 def create_opencv_verifier_from_pack(
     installed: InstalledModelPack, *, policy: LivenessPolicy | None = None,
+    evidence_policy: EvidencePolicy | None = None,
+    evidence_sink: EvidenceSink | None = None,
 ) -> LivenessVerifier:
     """Build the supported full stack from a verified ``opencv-default`` cache."""
     required = {"yunet", "sface", "pad_minifasnet_v2", "face_landmarker"}
@@ -71,4 +82,6 @@ def create_opencv_verifier_from_pack(
         pad_model=installed.models["pad_minifasnet_v2"],
         face_landmarker_model=installed.models["face_landmarker"],
         policy=policy,
+        evidence_policy=evidence_policy,
+        evidence_sink=evidence_sink,
     )

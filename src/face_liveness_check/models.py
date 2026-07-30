@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 import numpy as np
 
@@ -35,6 +36,17 @@ class LivenessPolicy:
     min_match_similarity: float = 0.42
     minimum_live_embeddings: int = 3
     passive_antispoof_mode: PassiveAntiSpoofMode = PassiveAntiSpoofMode.REQUIRED
+
+
+def active_first_policy(**overrides: Any) -> LivenessPolicy:
+    """Create a policy where PAD produces a warning rather than an auto-reject.
+
+    Active randomized challenges, face quality, duplicate-frame detection, and
+    identity matching remain required. Pair this policy with an opt-in
+    ``EvidencePolicy`` when suspicious sessions must be retained.
+    """
+    overrides.setdefault("passive_antispoof_mode", PassiveAntiSpoofMode.ADVISORY)
+    return LivenessPolicy(**overrides)
 
 
 @dataclass(frozen=True, slots=True)

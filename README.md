@@ -156,15 +156,14 @@ never captured by this feature.
 
 ```python
 from face_liveness_check import (
-    EvidencePolicy, LivenessPolicy, LocalEncryptedEvidenceSink,
-    PassiveAntiSpoofMode,
+    EvidencePolicy, LocalEncryptedEvidenceSink, active_first_policy,
 )
 
 sink = LocalEncryptedEvidenceSink("./encrypted-evidence", key=key_from_a_secret_manager)
 verifier = LivenessVerifier(
     reference_extractor,
     evidence_builder,
-    LivenessPolicy(passive_antispoof_mode=PassiveAntiSpoofMode.ADVISORY),
+    active_first_policy(),
     evidence_policy=EvidencePolicy(
         enabled=True,
         capture_on={"suspicious", "failed"},
@@ -185,6 +184,42 @@ retention deadline. For AWS, install `face-liveness-check[evidence-s3]` and use
 `S3EvidenceSink(bucket, kms_key_id="...")`; it writes objects with SSE-KMS.
 Bucket lifecycle rules, IAM access, KMS permissions, consent, and regional
 biometric-data obligations remain the integrator's responsibility.
+
+The webcam CLI exposes the same local flow without ever placing the key in shell
+history. Generate and store a Fernet key in your secret manager, then expose it
+to the process as an environment variable. `--pad-advisory` makes low PAD scores
+record a suspicious session rather than automatically reject it.
+
+```powershell
+$env:FACE_LIVENESS_EVIDENCE_KEY = "<Fernet key from your secret manager>"
+face-liveness-check webcam id-portrait.png --pad-advisory `
+  --evidence-local-dir .\encrypted-evidence --evidence-consent `
+  --evidence-capture-face-crops --evidence-retention-days 30
+```
+
+## Release and TestPyPI
+
+The current candidate version is `0.1.0rc1`. CI tests Python 3.10 through 3.12,
+builds both distributions, and checks their metadata. A tag such as
+`v0.1.0rc1` triggers TestPyPI publishing; a published GitHub Release triggers
+the production PyPI workflow.
+
+Before publishing, create Trusted Publishers in TestPyPI and PyPI with these
+exact values:
+
+| Field | TestPyPI | PyPI |
+| --- | --- | --- |
+| Owner | `AbdulazeezAde` | `AbdulazeezAde` |
+| Repository | `face-liveness-check` | `face-liveness-check` |
+| Workflow | `release-testpypi.yml` | `release.yml` |
+| Environment | `testpypi` | `pypi` |
+
+Protect both GitHub environments with required reviewers. After the TestPyPI
+workflow succeeds, install the candidate in a clean environment with:
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ face-liveness-check==0.1.0rc1
+```
 
 ## Security notes
 

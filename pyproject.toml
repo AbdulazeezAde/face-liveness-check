@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "face-liveness-check"
-version = "0.1.0"
+version = "0.1.0rc1"
 description = "Composable face liveness and identity-verification orchestration for Python."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,7 +36,7 @@ evidence-local = ["cryptography>=42"]
 evidence-s3 = ["boto3>=1.34"]
 evidence = ["cryptography>=42", "boto3>=1.34"]
 full = ["opencv-python>=4.8", "onnxruntime>=1.17", "mediapipe>=0.10", "PyMuPDF>=1.24"]
-dev = ["pytest>=8", "build>=1.2"]
+dev = ["pytest>=8", "build>=1.2", "twine>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/AbdulazeezAde/face-liveness-check"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,8 +12,10 @@ from time import monotonic
 from uuid import uuid4
 
 from .adapters import OnnxPassiveAntiSpoof, OpenCVYuNetDetector
+from .evidence import EvidencePolicy, LocalEncryptedEvidenceSink
 from .evaluation import PadCandidate, PadEvaluator, PadLabel, append_observation, summarize_observations
 from .model_packs import ModelPackManager, default_registry
+from .models import active_first_policy
 from .presets import create_opencv_verifier_from_pack
 from .reference_io import extract_reference_face_crop_file, load_reference_image_bgr
 from .webcam import verify_webcam
@@ -40,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
     webcam.add_argument("--camera", default="0", help="camera index, file path, or RTSP URL")
     webcam.add_argument("--duration", type=float, default=15.0, help="capture duration in seconds")
     webcam.add_argument("--no-preview", action="store_true", help="do not open an OpenCV preview window")
+    webcam.add_argument("--pad-advisory", action="store_true", help="flag low PAD scores as suspicious instead of rejecting them")
+    webcam.add_argument("--evidence-local-dir", type=Path, help="encrypted local evidence directory; requires explicit consent and a Fernet key")
+    webcam.add_argument("--evidence-key-env", default="FACE_LIVENESS_EVIDENCE_KEY", help="environment variable containing the Fernet key")
+    webcam.add_argument("--evidence-consent", action="store_true", help="confirm consent for this session's optional evidence retention")
+    webcam.add_argument("--evidence-capture-face-crops", action="store_true", help="also retain up to three detected face crops when evidence is captured")
+    webcam.add_argument("--evidence-retention-days", type=int, help="retention deadline recorded with encrypted evidence")
     _model_source_options(webcam)
 
     evaluate = subcommands.add_parser(
@@ -76,12 +85,19 @@ def main(argv: list[str] | None = None) -> int:
         print(destination)
         return 0
     if args.command == "webcam":
-        verifier = create_opencv_verifier_from_pack(installed)
+        evidence_policy, evidence_sink = _local_evidence_options(args)
+        verifier = create_opencv_verifier_from_pack(
+            installed,
+            policy=active_first_policy() if args.pad_advisory else None,
+            evidence_policy=evidence_policy,
+            evidence_sink=evidence_sink,
+        )
         reference = load_reference_image_bgr(args.reference, pdf_page=args.reference_page)
         camera: int | str = int(args.camera) if args.camera.isdecimal() else args.camera
         run = verify_webcam(
             verifier, reference, source=camera, duration_s=args.duration, preview=not args.no_preview,
             on_challenges=lambda prompts: print("Complete in order:", " -> ".join(prompts)),
+            evidence_consent=args.evidence_consent,
         )
         print(json.dumps(_run_json(run), indent=2))
         return 0 if run.result.matched else 2
@@ -108,6 +124,26 @@ def _run_models(args: argparse.Namespace, manager: ModelPackManager) -> int:
     installed = manager.install(args.name, accept_model_license=args.accept_model_license)
     print(installed.directory)
     return 0
+
+
+def _local_evidence_options(args: argparse.Namespace) -> tuple[EvidencePolicy | None, LocalEncryptedEvidenceSink | None]:
+    if args.evidence_local_dir is None:
+        if args.evidence_consent or args.evidence_capture_face_crops or args.evidence_retention_days is not None:
+            raise ValueError("evidence options require --evidence-local-dir")
+        return None, None
+    if not args.evidence_consent:
+        raise ValueError("--evidence-local-dir requires --evidence-consent")
+    key = os.environ.get(args.evidence_key_env)
+    if not key:
+        raise ValueError(f"set the Fernet key in environment variable {args.evidence_key_env}")
+    return (
+        EvidencePolicy(
+            enabled=True,
+            capture_face_crops=args.evidence_capture_face_crops,
+            retention_days=args.evidence_retention_days,
+        ),
+        LocalEncryptedEvidenceSink(args.evidence_local_dir, key),
+    )
 
 
 def _run_pad_evaluation(args: argparse.Namespace, manager: ModelPackManager) -> int:
@@ -191,9 +227,11 @@ def _run_json(run) -> dict[str, object]:
         "matched": result.matched,
         "similarity": result.similarity,
         "reasons": list(result.reasons),
+        "evidence_session_id": run.evidence_session_id,
         "liveness": {
             **asdict(result.liveness),
             "completed_challenges": [challenge.value for challenge in result.liveness.completed_challenges],
             "reasons": list(result.liveness.reasons),
+            "warnings": list(result.liveness.warnings),
         },
     }
