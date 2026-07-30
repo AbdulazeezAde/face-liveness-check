@@ -251,8 +251,37 @@ def opencv_default_pack() -> ModelPack:
     )
 
 
+def facenox_pad_experimental_pack() -> ModelPack:
+    """Independent binary PAD candidate for local evaluation only."""
+    return ModelPack(
+        name="pad-facenox-experimental",
+        version="2026.1",
+        license_notice=(
+            "Experimental PAD candidate. Its reported benchmark metrics must be "
+            "independently reproduced on your cameras and presentation attacks "
+            "before it is used to make production decisions."
+        ),
+        artifacts=(
+            ModelArtifact(
+                name="pad_facenox_minifas",
+                url="https://raw.githubusercontent.com/facenox/face-antispoof-onnx/2d4b33a3c0ba6e27772ac3a9b48ec495bf5c1dad/models/best_model_quantized.onnx",
+                sha256="fde20585635cae62ed1d41796f76b6f8bc4b92cd91ec1cf0f1bc6485d2d587a9",
+                filename="facenox_minifas_quantized.onnx",
+                purpose="Experimental binary passive PAD candidate: real or spoof",
+                license_url="https://github.com/facenox/face-antispoof-onnx/blob/2d4b33a3c0ba6e27772ac3a9b48ec495bf5c1dad/LICENSE",
+                preprocessing={
+                    "input_size": [128, 128], "color_order": "RGB", "range": "zero_to_one",
+                    "crop_scale": 1.5, "resize_mode": "letterbox_reflect", "live_class_index": 0,
+                    "output": "two_class_logits",
+                },
+            ),
+        ),
+    )
+
+
 def default_registry() -> ModelPackRegistry:
     registry = ModelPackRegistry()
     registry.register(research_default_pack())
     registry.register(opencv_default_pack())
+    registry.register(facenox_pad_experimental_pack())
     return registry

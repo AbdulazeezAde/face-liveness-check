@@ -5,9 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
+from uuid import uuid4
 
-from .adapters import OpenCVYuNetDetector
+from .adapters import OnnxPassiveAntiSpoof, OpenCVYuNetDetector
+from .evaluation import PadCandidate, PadEvaluator, PadLabel, append_observation, summarize_observations
 from .model_packs import ModelPackManager, default_registry
 from .presets import create_opencv_verifier_from_pack
 from .reference_io import extract_reference_face_crop_file, load_reference_image_bgr
@@ -37,6 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
     webcam.add_argument("--duration", type=float, default=15.0, help="capture duration in seconds")
     webcam.add_argument("--no-preview", action="store_true", help="do not open an OpenCV preview window")
     _model_source_options(webcam)
+
+    evaluate = subcommands.add_parser(
+        "evaluate-webcam",
+        help="collect score-only, labelled passive anti-spoofing observations from a webcam",
+    )
+    evaluate.add_argument("--label", required=True, choices=[label.value for label in PadLabel if label is not PadLabel.UNKNOWN])
+    evaluate.add_argument("--output", required=True, type=Path, help="JSONL output containing labels and scores only")
+    evaluate.add_argument("--camera", default="0", help="camera index, file path, or RTSP URL")
+    evaluate.add_argument("--duration", type=float, default=15.0, help="capture duration in seconds")
+    evaluate.add_argument(
+        "--candidate",
+        action="append",
+        choices=("minifasnet_v2", "facenox_experimental"),
+        help="candidate to score; repeat to compare candidates (default: both)",
+    )
+    evaluate.add_argument("--no-preview", action="store_true", help="do not open an OpenCV preview window")
+    _model_source_options(evaluate)
     return parser
 
 
@@ -45,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     manager = ModelPackManager(default_registry(), cache_dir=getattr(args, "cache_dir", None))
     if args.command == "models":
         return _run_models(args, manager)
+    if args.command == "evaluate-webcam":
+        return _run_pad_evaluation(args, manager)
     installed = _resolve_pack(args, manager)
     if args.command == "extract":
         destination = extract_reference_face_crop_file(
@@ -87,11 +110,78 @@ def _run_models(args: argparse.Namespace, manager: ModelPackManager) -> int:
     return 0
 
 
+def _run_pad_evaluation(args: argparse.Namespace, manager: ModelPackManager) -> int:
+    """Collect only opaque IDs, labels, face counts, timestamps, and PAD scores."""
+    if args.duration <= 0:
+        raise ValueError("duration must be positive")
+    selected = tuple(dict.fromkeys(args.candidate or ("minifasnet_v2", "facenox_experimental")))
+    installed = _resolve_pack(args, manager)
+    candidates: list[PadCandidate] = []
+    if "minifasnet_v2" in selected:
+        candidates.append(PadCandidate(
+            "minifasnet_v2",
+            OnnxPassiveAntiSpoof(installed.models["pad_minifasnet_v2"], input_size=(80, 80), positive_index=0, color_order="BGR"),
+            crop_padding=0.85,
+        ))
+    if "facenox_experimental" in selected:
+        facenox = _resolve_named_pack(args, manager, "pad-facenox-experimental")
+        candidates.append(PadCandidate(
+            "facenox_experimental",
+            OnnxPassiveAntiSpoof(
+                facenox.models["pad_facenox_minifas"], input_size=(128, 128), positive_index=0,
+                color_order="RGB", resize_mode="letterbox_reflect",
+            ),
+            crop_padding=0.25,
+        ))
+    evaluator = PadEvaluator(OpenCVYuNetDetector(installed.models["yunet"], score_threshold=0.7), candidates)
+    cv2 = _opencv()
+    camera: int | str = int(args.camera) if args.camera.isdecimal() else args.camera
+    capture = cv2.VideoCapture(camera)
+    if not capture.isOpened():
+        raise RuntimeError(f"could not open camera source: {args.camera}")
+    label = PadLabel(args.label)
+    sample_id = f"{label.value}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+    started = monotonic()
+    observations = 0
+    try:
+        while monotonic() - started < args.duration:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            append_observation(args.output, evaluator.observe(frame, sample_id=sample_id, label=label))
+            observations += 1
+            if not args.no_preview:
+                preview = frame.copy()
+                cv2.putText(preview, f"PAD evaluation: {label.value} (q to stop)", (12, 30), cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 255, 255), 2)
+                cv2.imshow("face-liveness-check PAD evaluation", preview)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+    finally:
+        capture.release()
+        if not args.no_preview:
+            cv2.destroyAllWindows()
+    thresholds = {candidate.name: 0.8 if candidate.name == "minifasnet_v2" else 0.5 for candidate in candidates}
+    print(json.dumps({"sample_id": sample_id, "label": label.value, "observations": observations, "summary": summarize_observations(args.output, thresholds)}, indent=2))
+    return 0
+
+
+def _resolve_named_pack(args: argparse.Namespace, manager: ModelPackManager, name: str):
+    return manager.install(name, accept_model_license=args.accept_model_license) if args.download else manager.resolve(name)
+
+
 def _resolve_pack(args: argparse.Namespace, manager: ModelPackManager):
     return (
         manager.install(args.pack, accept_model_license=args.accept_model_license)
         if args.download else manager.resolve(args.pack)
     )
+
+
+def _opencv():
+    try:
+        import cv2
+    except ImportError as error:
+        raise ImportError("Install OpenCV support: pip install 'face-liveness-check[opencv]'") from error
+    return cv2
 
 
 def _run_json(run) -> dict[str, object]:

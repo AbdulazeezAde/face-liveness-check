@@ -6,7 +6,7 @@ import secrets
 
 import numpy as np
 
-from .models import Challenge, FrameEvidence, LivenessPolicy, LivenessResult, VerificationResult
+from .models import Challenge, FrameEvidence, LivenessPolicy, LivenessResult, PassiveAntiSpoofMode, VerificationResult
 
 
 class LivenessSession:
@@ -16,6 +16,7 @@ class LivenessSession:
         self.policy = policy or LivenessPolicy()
         if not 1 <= self.policy.challenge_count <= len(Challenge):
             raise ValueError("challenge_count must be between 1 and 4")
+        self._pad_mode = PassiveAntiSpoofMode(self.policy.passive_antispoof_mode)
         self.challenges = tuple(secrets.SystemRandom().sample(list(Challenge), self.policy.challenge_count))
         self._completed: list[Challenge] = []
         self._reasons: list[str] = []
@@ -44,6 +45,7 @@ class LivenessSession:
 
     def result(self) -> LivenessResult:
         reasons = list(self._reasons)
+        warnings: list[str] = []
         valid_faces = [frame for frame in self._frames if frame.face_count == 1]
         if len(valid_faces) < self.policy.min_face_frames:
             reasons.append("not enough single-face frames")
@@ -56,17 +58,17 @@ class LivenessSession:
                 reasons.append("lighting is insufficient for reliable analysis")
             passive = [f.passive_antispoof_score for f in valid_faces if f.passive_antispoof_score is not None]
             if not passive:
-                reasons.append("passive anti-spoof evidence is missing")
+                self._add_pad_signal(reasons, warnings, "passive anti-spoof evidence is missing")
             elif float(np.median(passive)) < self.policy.min_passive_score:
-                reasons.append("passive anti-spoof check failed")
+                self._add_pad_signal(reasons, warnings, "passive anti-spoof check is suspicious")
             fingerprints = [f.frame_fingerprint for f in valid_faces if f.frame_fingerprint]
             if fingerprints and 1 - len(set(fingerprints)) / len(fingerprints) > self.policy.max_duplicate_ratio:
                 reasons.append("too many duplicate video frames")
         else:
             reasons.append("no usable single-face frame")
 
-        confidence = self._confidence(valid_faces, reasons)
-        return LivenessResult(not reasons, confidence, tuple(self._completed), tuple(reasons), len(self._frames))
+        confidence = self._confidence(valid_faces, reasons + warnings)
+        return LivenessResult(not reasons, confidence, tuple(self._completed), tuple(reasons), len(self._frames), tuple(warnings))
 
     def compare(self, reference_embedding: np.ndarray) -> VerificationResult:
         """Compare reference embedding only after liveness evaluates successfully."""
@@ -93,6 +95,11 @@ class LivenessSession:
     def _add_reason(self, reason: str) -> None:
         if reason not in self._reasons:
             self._reasons.append(reason)
+
+    def _add_pad_signal(self, reasons: list[str], warnings: list[str], message: str) -> None:
+        target = warnings if self._pad_mode is PassiveAntiSpoofMode.ADVISORY else reasons
+        if message not in target:
+            target.append(message)
 
 
 def _normalize(vector: np.ndarray) -> np.ndarray:

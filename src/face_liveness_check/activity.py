@@ -45,6 +45,7 @@ class LandmarkActivityDetector:
         self._baseline_nose_y: float | None = None
         self._nod_down = False
         self._turn_latched: Challenge | None = None
+        self._turn_ready = False
 
     def observe(self, landmarks: np.ndarray) -> Challenge | None:
         points = np.asarray(landmarks, dtype=np.float32)
@@ -89,11 +90,19 @@ class LandmarkActivityDetector:
             challenge = Challenge.TURN_RIGHT
         elif offset <= -self.config.turn_threshold:
             challenge = Challenge.TURN_LEFT
+        # A head that starts turned must not complete a challenge without motion.
+        # Require at least one neutral observation, and require returning neutral
+        # before a subsequent turn can be counted again.
+        if challenge is None:
+            self._turn_ready = True
+            self._turn_latched = None
+            return None
+        if not self._turn_ready:
+            return None
         if challenge != self._turn_latched:
             self._turn_latched = challenge
+            self._turn_ready = False
             return challenge
-        if challenge is None:
-            self._turn_latched = None
         return None
 
     def _nod(self, points: np.ndarray) -> Challenge | None:
