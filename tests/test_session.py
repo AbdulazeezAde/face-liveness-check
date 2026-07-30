@@ -1,8 +1,24 @@
-import numpy as np
+import hashlib
 
-from face_liveness_check import Challenge, FrameEvidence, LivenessPolicy, LivenessSession
+import numpy as np
+import pytest
+
+from face_liveness_check import (
+    Challenge,
+    FrameEvidence,
+    LivenessPolicy,
+    LivenessSession,
+    ModelArtifact,
+    ModelPack,
+    ModelPackError,
+    ModelPackManager,
+    ModelPackRegistry,
+    default_registry,
+    extract_reference_face_crop,
+)
 from face_liveness_check.adapters import FaceDetection, OnnxPassiveAntiSpoof
 from face_liveness_check.activity import ActivityConfig, LandmarkActivityDetector, LandmarkIndices
+from face_liveness_check.cli import build_parser
 from face_liveness_check.pipeline import ReferenceExtractor
 from face_liveness_check.verifier import LivenessVerifier
 
@@ -96,3 +112,73 @@ def test_reference_extractor_rejects_ambiguous_images_and_verifier_exposes_chall
     run = verifier.verify(image, [(1, image), (2, image), (3, image)])
     assert len(run.challenges) == 1
     assert not run.result.liveness.passed  # no active challenge was supplied
+
+
+def test_live_verification_exposes_prompts_before_frames_are_captured():
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    extractor = ReferenceExtractor(_OneFaceDetector(), _Embedder())
+
+    class Builder:
+        def build(self, frame, timestamp):
+            return _evidence(timestamp, embedding=np.array([1.0, 0.0]))
+
+    verifier = LivenessVerifier(extractor, Builder(), LivenessPolicy(challenge_count=1))
+    live = verifier.start(image)
+
+    assert len(live.challenges) == 1
+    assert live.challenges[0] in {challenge.value for challenge in Challenge}
+
+
+def test_model_pack_install_records_license_and_offline_resolution_rechecks_checksums(tmp_path):
+    payload = tmp_path / "source.onnx"
+    payload.write_bytes(b"trusted-model-bytes")
+    digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+    pack = ModelPack(
+        name="test-pack",
+        version="1",
+        license_notice="test licence",
+        artifacts=(ModelArtifact("model", payload.as_uri(), digest, "model.onnx", "test", "https://example.test/license"),),
+    )
+    registry = ModelPackRegistry()
+    registry.register(pack)
+    manager = ModelPackManager(registry, cache_dir=tmp_path / "cache")
+
+    with pytest.raises(ModelPackError, match="accept_model_license"):
+        manager.install("test-pack")
+    installed = manager.install("test-pack", accept_model_license=True)
+    assert manager.resolve("test-pack").models == installed.models
+
+    installed.models["model"].write_bytes(b"tampered")
+    with pytest.raises(ModelPackError, match="invalid checksums"):
+        manager.resolve("test-pack")
+
+
+def test_opencv_default_pack_is_complete_and_checksum_pinned():
+    pack = default_registry().get("opencv-default")
+    assert {artifact.name for artifact in pack.artifacts} == {"yunet", "sface", "pad_minifasnet_v2", "face_landmarker"}
+    assert all(len(artifact.sha256) == 64 for artifact in pack.artifacts)
+    assert all("latest" not in artifact.url for artifact in pack.artifacts)
+
+
+def test_reference_crop_requires_one_face_without_opencv_runtime():
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    crop = extract_reference_face_crop(image, _OneFaceDetector())
+    assert crop.shape == (4, 4, 3)
+
+    class NoFace:
+        def detect(self, image):
+            return []
+
+    with pytest.raises(ValueError, match="exactly one face"):
+        extract_reference_face_crop(image, NoFace())
+
+
+def test_cli_parses_model_install_and_webcam_commands():
+    parser = build_parser()
+    install = parser.parse_args(["models", "install", "opencv-default", "--accept-model-license"])
+    webcam = parser.parse_args(["webcam", "id.png", "--download", "--duration", "12"])
+
+    assert install.name == "opencv-default"
+    assert install.accept_model_license
+    assert webcam.reference.name == "id.png"
+    assert webcam.duration == 12

@@ -1,11 +1,16 @@
-"""Optional OpenCV video capture helpers."""
+"""Optional OpenCV frame capture utilities."""
+
+from __future__ import annotations
+
 from collections.abc import Iterator
 from typing import Any
 
+
 def iter_frames(source: int | str, max_frames: int | None = None) -> Iterator[tuple[float, Any]]:
+    """Yield ``(timestamp_seconds, BGR_frame)`` from a camera, file, or RTSP source."""
     try:
         import cv2
-    except ImportError as error:
+    except ImportError as error:  # pragma: no cover - environment dependent
         raise ImportError("Install the OpenCV extra: pip install 'face-liveness-check[opencv]'") from error
     capture = cv2.VideoCapture(source)
     if not capture.isOpened():
@@ -14,7 +19,8 @@ def iter_frames(source: int | str, max_frames: int | None = None) -> Iterator[tu
         count = 0
         while max_frames is None or count < max_frames:
             ok, frame = capture.read()
-            if not ok: break
+            if not ok:
+                break
             yield capture.get(cv2.CAP_PROP_POS_MSEC) / 1000.0, frame
             count += 1
     finally:

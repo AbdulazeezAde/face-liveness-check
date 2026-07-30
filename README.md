@@ -16,13 +16,16 @@
 
 ```bash
 pip install face-liveness-check
-# Video integration
-pip install 'face-liveness-check[opencv]'
+# Full default stack, webcam support, and PDF ID input
+pip install 'face-liveness-check[full]'
 ```
 
 ## Quick start
 
-Supply licensed detector, landmark, embedding, and PAD adapters. The package does not download model weights or impose a model licence. `OnnxArcFaceEmbedder` and `OnnxPassiveAntiSpoof` are ready for compatible ONNX models; detector and landmark adapters remain application-owned because output contracts vary by model.
+Supply licensed detector, landmark, embedding, and PAD adapters, or use the
+checksum-pinned default stack described below. `OnnxArcFaceEmbedder` and
+`OnnxPassiveAntiSpoof` are ready for compatible ONNX models; detector and
+landmark adapters remain application-owned where output contracts vary by model.
 
 ```python
 from face_liveness_check import LivenessPolicy, LivenessVerifier
@@ -57,6 +60,66 @@ duplicate-frame replays.
   configure `LandmarkIndices` for another landmark model.
 - **PAD model:** returns a bona-fide probability or logits. Set its live-class
   index explicitly and calibrate the threshold before deployment.
+
+## Default model pack
+
+Weights are not bundled into the PyPI wheel. The supported `opencv-default` pack
+downloads four separately licensed models once to the operating-system cache
+(normally `~/.cache/face-liveness-check/models/`), verifies every SHA-256 digest,
+records the accepted licence notice, and reuses the files on later runs.
+
+```python
+from face_liveness_check import (
+    LivenessVerifier, ModelPackManager, create_opencv_verifier_from_pack,
+    default_registry,
+)
+
+manager = ModelPackManager(default_registry())
+verifier = LivenessVerifier.from_model_pack(
+    "opencv-default",
+    manager=manager,
+    factory=create_opencv_verifier_from_pack,
+    download=True,
+    accept_model_license=True,
+)
+```
+
+Use `download=False` on a later startup to require a previously verified cache
+without making a network request. The pack contains YuNet for detection, SFace
+for alignment and identity embeddings, MiniFASNetV2 for passive live/print/replay
+PAD evidence, and MediaPipe Face Landmarker for dense blink/nod landmarks.
+
+`research-default` remains a smaller MiniFASNetV2-only pack for applications
+providing their own detection, identity, and landmark models.
+
+Dense landmarks are intentionally required for the active default policy; blink
+and nod are not silently replaced with weak image-motion heuristics.
+
+## Command line and webcam demo
+
+Install the model pack after reviewing its licence notice:
+
+```bash
+face-liveness-check models list
+face-liveness-check models install opencv-default --accept-model-license
+```
+
+Extract the single portrait from an image or PDF identity document, then run a
+short interactive camera session. The CLI prints the randomized challenge order
+before capture and emits a JSON result. Press `q` to end capture early.
+
+```bash
+face-liveness-check extract id.pdf id-portrait.png
+face-liveness-check webcam id-portrait.png --duration 15
+```
+
+For a first-time one-command flow, pass `--download --accept-model-license` to
+`extract` or `webcam`. PDF reading is local: the tool rasterizes only the selected
+page and does not upload or retain ID images.
+
+```bash
+face-liveness-check webcam id.pdf --download --accept-model-license
+```
 
 ## Security notes
 
