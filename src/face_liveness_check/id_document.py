@@ -8,8 +8,10 @@ blocks unless an integrating application explicitly chooses to store them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
+import re
 from typing import Callable, Mapping, Protocol, Sequence
 
 import numpy as np
@@ -22,6 +24,7 @@ class DocumentType(str, Enum):
     UNKNOWN = "unknown"
     PASSPORT_TD3 = "passport_td3"
     CARD = "card"
+    NIGERIA_NIN_SLIP = "nigeria_nin_slip"
 
 
 class FieldSource(str, Enum):
@@ -264,6 +267,53 @@ class LabelledCardTemplate:
         return fields, tuple(warnings)
 
 
+class NigeriaNinSlipTemplate(LabelledCardTemplate):
+    """Conservative OCR template for labelled Nigerian NIN-slip fields.
+
+    This only checks an extracted NIN's 11-digit shape. It cannot authenticate a
+    NIN, QR code, holder, or document. Use an authorised NIMC verification
+    service for that separate decision.
+    """
+
+    document_type = DocumentType.NIGERIA_NIN_SLIP
+
+    def __init__(self) -> None:
+        super().__init__(
+            {
+                "nin": ("NATIONAL IDENTIFICATION NUMBER", "NIN"),
+                "surname": ("SURNAME", "LAST NAME"),
+                "given_names": ("GIVEN NAMES", "FIRST NAME", "OTHER NAMES"),
+                "date_of_birth": ("DATE OF BIRTH", "DOB"),
+                "gender": ("GENDER", "SEX"),
+                "address": ("ADDRESS",),
+            },
+            markers=("NIN",),
+            required_fields=("nin",),
+            validators={"nin": lambda value: _valid_nigeria_nin(value), "date_of_birth": lambda value: _valid_date(value)},
+        )
+
+    def matches(self, blocks: Sequence[OcrTextBlock]) -> bool:
+        content = "\n".join(block.text.upper() for block in blocks)
+        return "NIN" in content and ("NATIONAL" in content or bool(_nin_candidates(blocks)))
+
+    def extract(self, blocks: Sequence[OcrTextBlock]) -> tuple[Mapping[str, ExtractedField], tuple[str, ...]]:
+        fields, inherited_warnings = super().extract(blocks)
+        values = dict(fields)
+        warnings = list(inherited_warnings)
+        candidates = _nin_candidates(blocks)
+        existing = values.get("nin")
+        if existing is None or not _valid_nigeria_nin(existing.value or ""):
+            if len(candidates) == 1:
+                value, confidence = candidates[0]
+                values["nin"] = ExtractedField(value, confidence, FieldSource.OCR, True)
+                warnings = [warning for warning in warnings if warning != "card field failed validation: nin"]
+            elif len(candidates) > 1:
+                warnings.append("multiple 11-digit NIN candidates were found")
+        if "nin" not in values or not values["nin"].validated:
+            warnings.append("NIN must contain exactly 11 digits; document requires manual review")
+        return values, tuple(dict.fromkeys(warnings))
+
+
 class IdDocumentExtractor:
     """Combine local image normalisation, OCR, document templates, and portrait crops."""
 
@@ -273,7 +323,7 @@ class IdDocumentExtractor:
         *,
         normalizer: DocumentNormalizer | None = None,
         detector: FaceDetector | None = None,
-        templates: Sequence[DocumentTemplate] = (PassportTd3Template(),),
+        templates: Sequence[DocumentTemplate] = (PassportTd3Template(), NigeriaNinSlipTemplate()),
         barcode_reader: BarcodeReader | None = None,
         barcode_field_parser: BarcodeFieldParser | None = None,
     ) -> None:
@@ -368,6 +418,28 @@ def _label_value(blocks: Sequence[OcrTextBlock], aliases: Sequence[str]) -> tupl
                     next_block = blocks[index + 1]
                     return next_block.text, min(block.confidence, next_block.confidence)
     return None
+
+
+def _nin_candidates(blocks: Sequence[OcrTextBlock]) -> list[tuple[str, float]]:
+    candidates: list[tuple[str, float]] = []
+    for block in blocks:
+        for value in re.findall(r"(?<!\d)(\d{11})(?!\d)", block.text):
+            candidates.append((value, block.confidence))
+    return candidates
+
+
+def _valid_nigeria_nin(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{11}", value.replace(" ", "")))
+
+
+def _valid_date(value: str) -> bool:
+    for pattern in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            datetime.strptime(value.strip(), pattern)
+            return True
+        except ValueError:
+            pass
+    return False
 
 
 def _normalise_mrz(value: str) -> str:

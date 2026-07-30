@@ -33,6 +33,7 @@ from face_liveness_check import (
     PadEvaluator,
     PadLabel,
     NormalizedDocument,
+    NigeriaNinSlipTemplate,
     OcrTextBlock,
     PassiveAntiSpoofMode,
     ReviewEvent,
@@ -596,3 +597,28 @@ def test_labelled_card_template_and_barcode_conflicts_require_manual_review():
     assert result.barcodes[0].format == "QR"
     assert "barcode value conflicts with extracted field: nin" in result.warnings
     assert result.requires_manual_review
+
+
+def test_nigeria_nin_slip_template_extracts_only_format_checked_nin():
+    class Ocr:
+        def read(self, _image):
+            return (
+                OcrTextBlock("NATIONAL IDENTITY MANAGEMENT COMMISSION", .99),
+                OcrTextBlock("NIN: 12345678901", .98),
+                OcrTextBlock("SURNAME: Example", .97),
+                OcrTextBlock("DATE OF BIRTH: 01/02/1990", .96),
+            )
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    result = IdDocumentExtractor(Ocr(), normalizer=Normalizer(), templates=(NigeriaNinSlipTemplate(),)).extract(
+        np.zeros((20, 30, 3), dtype=np.uint8),
+    )
+
+    assert result.document_type is DocumentType.NIGERIA_NIN_SLIP
+    assert result.fields["nin"].value == "12345678901"
+    assert result.fields["nin"].validated
+    assert result.fields["date_of_birth"].validated
+    assert not result.requires_manual_review

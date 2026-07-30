@@ -94,3 +94,12 @@ country has the same layout. A template should define:
 Do not commit real IDs, OCR output containing real identities, or live portrait
 crops as test fixtures. Use generated records and consented test material under
 an explicit retention policy.
+
+## Nigerian NIN slips
+
+`NigeriaNinSlipTemplate` is the first country-specific template. It recognises
+labelled NIN, names, date-of-birth, gender, and address fields and checks only
+that a NIN has 11 digits. It does not establish that a slip, QR code, person, or
+NIN is authentic. NIMC guidance describes scanning a NIN-slip QR code through
+its verification flow; use an authorised NIMC verification service for any
+authentication decision rather than trusting OCR or a locally decoded barcode.

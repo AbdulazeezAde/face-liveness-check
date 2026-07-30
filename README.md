@@ -242,6 +242,10 @@ Use `face-liveness-check extract-id passport.pdf --document-type passport_td3`
 for a local CLI result. Add `--read-barcodes` to decode QR/PDF417 where
 available; barcode text stays out of terminal output unless explicitly requested.
 
+`NigeriaNinSlipTemplate` supports labelled NIN-slip extraction and checks only
+the 11-digit NIN format. It does not authenticate the slip, holder, QR code, or
+NIN; use an authorised NIMC verification service for that separate decision.
+
 The extractor processes data locally and does not write document images, OCR
 text, fields, or crops. Read the [ID document extraction guide](docs/ID_DOCUMENT_EXTRACTION.md)
 before configuring a production OCR model or storing any extracted data.

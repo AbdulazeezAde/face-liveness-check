@@ -12,7 +12,7 @@ from .reference_io import extract_reference_face_crop, extract_reference_face_cr
 from .webcam import verify_webcam
 from .evaluation import PadCalibrationResult, PadCandidate, PadEvaluator, PadLabel, PadObservation, PadThresholdMetrics, append_observation, calibrate_thresholds, summarize_observations
 from .evidence import EvidenceArtifact, EvidenceEvent, EvidencePolicy, EvidenceRetentionPlan, EvidenceRetentionResult, EvidenceSink, LocalEncryptedEvidenceSink, S3EvidenceSink
-from .id_document import BarcodePayload, BarcodeReader, DocumentNormalizer, DocumentQuality, DocumentType, ExtractedField, FieldSource, IdDocumentExtractor, IdExtractionResult, LabelledCardTemplate, NormalizedDocument, OcrEngine, OcrTextBlock, PassportTd3Template
+from .id_document import BarcodePayload, BarcodeReader, DocumentNormalizer, DocumentQuality, DocumentType, ExtractedField, FieldSource, IdDocumentExtractor, IdExtractionResult, LabelledCardTemplate, NigeriaNinSlipTemplate, NormalizedDocument, OcrEngine, OcrTextBlock, PassportTd3Template
 from .ocr import PaddleOcrEngine
 from .barcodes import JsonBarcodeFieldParser, ZxingBarcodeReader
 from .review import ReviewEvent, ReviewPolicy, ReviewSink, WebhookReviewSink
@@ -64,6 +64,7 @@ __all__ = [
     "OnnxArcFaceEmbedder",
     "OnnxPassiveAntiSpoof",
     "NormalizedDocument",
+    "NigeriaNinSlipTemplate",
     "OcrEngine",
     "OcrTextBlock",
     "PaddleOcrEngine",
