@@ -67,9 +67,11 @@ The repository includes a small local browser frontend in
 [`examples/web_demo`](examples/web_demo) for testing an integration. It is not
 part of the installed library, does not add a CLI command, and is not included
 in the wheel. It uploads a reference portrait, samples webcam frames to a
-localhost FastAPI service, shows the randomized prompts, and renders the
-verification result. Frames and the reference image remain in memory only for
-the active session.
+loopback-only FastAPI service, streams frames over WebSocket, shows the
+randomized prompts, and renders the verification result. Frames and the
+reference image remain in memory only for the active session. Each session has
+an HMAC-signed, expiring token; the example enforces a local-origin allowlist,
+frame-size limit, and frame-rate limit.
 
 Run it only from a repository checkout:
 
@@ -80,7 +82,8 @@ python examples/web_demo/server.py --download-models --accept-model-license
 ```
 
 Open <http://127.0.0.1:8000> and use the `--pad-advisory` behavior built into
-the demo's active-first policy. See the demo README for security boundaries.
+the example's active-first policy. See the demo README for the stream contract,
+configuration, and security boundaries.
 
 ## Default model pack
 

@@ -11,9 +11,13 @@ const placeholder = document.querySelector("#video-placeholder");
 const resultCard = document.querySelector("#result-card");
 
 let stream;
-let sessionId;
+let sessionToken;
+let socket;
 let frameTimer;
 let inFlight = false;
+let finishRequest;
+let streamReady;
+let expectedSocketClose = false;
 
 referenceInput.addEventListener("change", () => {
   const [file] = referenceInput.files;
@@ -41,12 +45,14 @@ async function startSession() {
     const response = await fetch("/api/sessions", { method: "POST", body: data });
     const session = await response.json();
     if (!response.ok) throw new Error(session.detail || "Could not start session");
-    sessionId = session.session_id;
+    sessionToken = session.session_token;
     renderChallenges(session.challenges);
+    await connectStream(session.stream_path, session.session_token);
     finishButton.disabled = false;
-    setStatus("Analysing", "live");
+    setStatus("Secure stream active", "live");
     frameTimer = window.setInterval(captureFrame, 750);
   } catch (error) {
+    closeSessionConnection();
     stopCamera();
     setStatus("Error", "error");
     showError(error.message);
@@ -55,47 +61,132 @@ async function startSession() {
   }
 }
 
+function connectStream(streamPath, token) {
+  return new Promise((resolve, reject) => {
+    streamReady = { resolve, reject };
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    socket = new WebSocket(`${protocol}//${window.location.host}${streamPath}`);
+    socket.binaryType = "arraybuffer";
+    socket.addEventListener("open", () => socket.send(JSON.stringify({ type: "authenticate", session_token: token })), { once: true });
+    socket.addEventListener("error", () => {
+      const error = new Error("Could not open the local WebSocket stream");
+      streamReady?.reject(error);
+      streamReady = undefined;
+    }, { once: true });
+    socket.addEventListener("message", event => {
+      try {
+        handleStreamMessage(JSON.parse(event.data));
+      } catch {
+        handleStreamError(new Error("The local server returned an invalid stream message"));
+      }
+    });
+    socket.addEventListener("close", event => {
+      socket = undefined;
+      inFlight = false;
+      if (!expectedSocketClose && sessionToken) {
+        handleStreamError(new Error(`Stream closed (${event.code})`));
+      }
+    });
+  });
+}
+
 async function captureFrame() {
-  if (!sessionId || inFlight || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+  if (!sessionToken || inFlight || socket?.readyState !== WebSocket.OPEN || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
   inFlight = true;
   try {
-    const blob = await videoBlob();
-    const data = new FormData();
-    data.append("frame", blob, "webcam.jpg");
-    const response = await fetch(`/api/sessions/${sessionId}/frames`, { method: "POST", body: data });
-    const progress = await response.json();
-    if (!response.ok) throw new Error(progress.detail || "Frame processing failed");
-    frameCount.textContent = `${progress.frames_seen} frames analysed`;
-    markCompleted(progress.completed_challenges);
-    if (progress.warnings.length) setStatus("Suspicious PAD signal", "warning");
+    socket.send(await (await videoBlob()).arrayBuffer());
   } catch (error) {
-    clearInterval(frameTimer);
-    setStatus("Frame error", "error");
-    showError(error.message);
-  } finally {
     inFlight = false;
+    handleStreamError(error);
   }
 }
 
 async function finishSession() {
-  if (!sessionId) return;
+  if (!sessionToken || socket?.readyState !== WebSocket.OPEN) return;
   clearInterval(frameTimer);
   finishButton.disabled = true;
   setBusy(finishButton, true, "Verifying…");
   try {
-    const response = await fetch(`/api/sessions/${sessionId}/finish`, { method: "POST" });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "Could not finish session");
+    const result = await requestFinish();
     renderResult(result);
     setStatus(result.matched ? "Complete" : "Review result", result.matched ? "complete" : "warning");
   } catch (error) {
     setStatus("Error", "error");
     showError(error.message);
   } finally {
-    sessionId = undefined;
+    expectedSocketClose = true;
+    sessionToken = undefined;
     stopCamera();
     setBusy(finishButton, false, "Finish and verify");
+    finishButton.disabled = true;
   }
+}
+
+function requestFinish() {
+  return new Promise((resolve, reject) => {
+    finishRequest = { resolve, reject };
+    socket.send(JSON.stringify({ type: "finish" }));
+  });
+}
+
+function handleStreamMessage(message) {
+  if (message.type === "authenticate") return;
+  if (message.type === "ready") {
+    streamReady?.resolve();
+    streamReady = undefined;
+    return;
+  }
+  if (message.type === "progress") {
+    inFlight = false;
+    frameCount.textContent = `${message.frames_seen} frames analysed`;
+    markCompleted(message.completed_challenges);
+    if (message.warnings.length) setStatus("Suspicious PAD signal", "warning");
+    return;
+  }
+  if (message.type === "warning") {
+    inFlight = false;
+    setStatus("Frame rate limited", "warning");
+    return;
+  }
+  if (message.type === "result") {
+    inFlight = false;
+    expectedSocketClose = true;
+    finishRequest?.resolve(message.result);
+    finishRequest = undefined;
+    return;
+  }
+  if (message.type === "error") {
+    const error = new Error(message.detail || "Stream processing failed");
+    streamReady?.reject(error);
+    streamReady = undefined;
+    handleStreamError(error);
+  }
+}
+
+function handleStreamError(error) {
+  clearInterval(frameTimer);
+  inFlight = false;
+  finishRequest?.reject(error);
+  finishRequest = undefined;
+  streamReady?.reject(error);
+  streamReady = undefined;
+  expectedSocketClose = true;
+  closeSessionConnection();
+  stopCamera();
+  finishButton.disabled = true;
+  setStatus("Stream error", "error");
+  showError(error.message);
+}
+
+function closeSessionConnection() {
+  clearInterval(frameTimer);
+  if (socket?.readyState === WebSocket.OPEN && sessionToken) {
+    expectedSocketClose = true;
+    socket.send(JSON.stringify({ type: "cancel" }));
+  }
+  socket?.close();
+  socket = undefined;
+  sessionToken = undefined;
 }
 
 function videoBlob() {
