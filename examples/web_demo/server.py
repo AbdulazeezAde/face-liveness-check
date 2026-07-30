@@ -18,9 +18,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from face_liveness_check import (
     LivenessVerifier,
@@ -37,6 +38,89 @@ _DEFAULT_MAX_FRAME_BYTES = 1 * 1024 * 1024
 _SESSION_TTL_S = 120.0
 _DEFAULT_MAX_FRAME_RATE_HZ = 2.0
 _STATIC_DIRECTORY = Path(__file__).parent / "static"
+
+
+class _MessageModel(BaseModel):
+    """Strict, serializable contract shared by HTTP and WebSocket messages."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class HealthResponse(_MessageModel):
+    status: Literal["ok"]
+    model_pack: str
+    models_loaded: bool
+    frame_retention: Literal["memory-only during an active session"]
+    stream_transport: Literal["websocket"]
+    session_ttl_seconds: float = Field(gt=0)
+    max_frame_bytes: int = Field(gt=0)
+    max_frame_rate_hz: float = Field(gt=0)
+    allowed_origins: list[str]
+
+
+class SessionStartResponse(_MessageModel):
+    session_token: str = Field(min_length=1)
+    challenges: list[str]
+    stream_path: Literal["/api/stream"]
+    expires_in_seconds: float = Field(gt=0)
+
+
+class StreamAuthenticateRequest(_MessageModel):
+    type: Literal["authenticate"]
+    session_token: str = Field(min_length=1)
+
+
+class StreamCommandRequest(_MessageModel):
+    type: Literal["finish", "cancel"]
+
+
+class StreamAuthenticatePrompt(_MessageModel):
+    type: Literal["authenticate"] = "authenticate"
+
+
+class StreamReadyMessage(_MessageModel):
+    type: Literal["ready"] = "ready"
+    max_frame_bytes: int = Field(gt=0)
+
+
+class StreamProgressMessage(_MessageModel):
+    type: Literal["progress"] = "progress"
+    frames_seen: int = Field(ge=0)
+    completed_challenges: list[str]
+    warnings: list[str]
+
+
+class StreamWarningMessage(_MessageModel):
+    type: Literal["warning"] = "warning"
+    code: Literal["frame_rate_limited"]
+    detail: str
+
+
+class StreamErrorMessage(_MessageModel):
+    type: Literal["error"] = "error"
+    detail: str
+
+
+class LivenessResponse(_MessageModel):
+    passed: bool
+    confidence: float
+    completed_challenges: list[str]
+    warnings: list[str]
+    reasons: list[str]
+    frames_seen: int = Field(ge=0)
+
+
+class VerificationResultResponse(_MessageModel):
+    challenges: list[str]
+    matched: bool
+    similarity: float | None
+    reasons: list[str]
+    liveness: LivenessResponse
+
+
+class StreamResultMessage(_MessageModel):
+    type: Literal["result"] = "result"
+    result: VerificationResultResponse
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,18 +181,18 @@ class DemoService:
         defaults = (f"http://127.0.0.1:{self.config.port}", f"http://localhost:{self.config.port}")
         return tuple(dict.fromkeys((*defaults, *self.config.additional_allowed_origins)))
 
-    def health(self) -> dict[str, object]:
-        return {
-            "status": "ok",
-            "model_pack": self.config.model_pack,
-            "models_loaded": self._verifier is not None,
-            "frame_retention": "memory-only during an active session",
-            "stream_transport": "websocket",
-            "session_ttl_seconds": self.config.session_ttl_s,
-            "max_frame_bytes": self.config.max_frame_bytes,
-            "max_frame_rate_hz": self.config.max_frame_rate_hz,
-            "allowed_origins": list(self.allowed_origins),
-        }
+    def health(self) -> HealthResponse:
+        return HealthResponse(
+            status="ok",
+            model_pack=self.config.model_pack,
+            models_loaded=self._verifier is not None,
+            frame_retention="memory-only during an active session",
+            stream_transport="websocket",
+            session_ttl_seconds=self.config.session_ttl_s,
+            max_frame_bytes=self.config.max_frame_bytes,
+            max_frame_rate_hz=self.config.max_frame_rate_hz,
+            allowed_origins=list(self.allowed_origins),
+        )
 
     def start(self, reference_bgr: np.ndarray) -> tuple[str, tuple[str, ...]]:
         with self._model_lock:
@@ -121,7 +205,7 @@ class DemoService:
             self._sessions[session_id] = _DemoSession(live, now, now + self.config.session_ttl_s)
         return self._sign(session_id, expires_at), live.challenges
 
-    def observe(self, session_token: str, frame_bgr: np.ndarray) -> dict[str, object]:
+    def observe(self, session_token: str, frame_bgr: np.ndarray) -> StreamProgressMessage:
         session = self._session(session_token)
         with session.lock, self._model_lock:
             now = time.monotonic()
@@ -131,13 +215,13 @@ class DemoService:
             session.last_frame_at = now
             session.live.observe(frame_bgr, now - session.created_at)
             liveness = session.live.session.result()
-        return {
-            "frames_seen": liveness.frames_seen,
-            "completed_challenges": [challenge.value for challenge in liveness.completed_challenges],
-            "warnings": list(liveness.warnings),
-        }
+        return StreamProgressMessage(
+            frames_seen=liveness.frames_seen,
+            completed_challenges=[challenge.value for challenge in liveness.completed_challenges],
+            warnings=list(liveness.warnings),
+        )
 
-    def finish(self, session_token: str) -> dict[str, object]:
+    def finish(self, session_token: str) -> VerificationResultResponse:
         session_id = self._verified_session_id(session_token)
         with self._lock:
             self._remove_expired_locked()
@@ -231,12 +315,12 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
             raise HTTPException(status_code=404, detail="asset not found")
         return FileResponse(destination)
 
-    @app.get("/api/health")
-    def health() -> dict[str, object]:
+    @app.get("/api/health", response_model=HealthResponse)
+    def health() -> HealthResponse:
         return service.health()
 
-    @app.post("/api/sessions")
-    async def create_session(request: Request, reference: UploadFile = File(...)) -> dict[str, object]:
+    @app.post("/api/sessions", response_model=SessionStartResponse)
+    async def create_session(request: Request, reference: UploadFile = File(...)) -> SessionStartResponse:
         try:
             _require_allowed_origin(request.headers.get("origin"), service.allowed_origins)
             image = await _read_bgr(reference)
@@ -247,12 +331,12 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
             raise HTTPException(status_code=422, detail=str(error)) from error
         except Exception as error:
             raise HTTPException(status_code=503, detail=f"unable to start verification: {error}") from error
-        return {
-            "session_token": session_token,
-            "challenges": list(challenges),
-            "stream_path": "/api/stream",
-            "expires_in_seconds": service.config.session_ttl_s,
-        }
+        return SessionStartResponse(
+            session_token=session_token,
+            challenges=list(challenges),
+            stream_path="/api/stream",
+            expires_in_seconds=service.config.session_ttl_s,
+        )
 
     @app.websocket("/api/stream")
     async def stream_session(websocket: WebSocket) -> None:
@@ -260,14 +344,14 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
             await websocket.close(code=1008, reason="origin is not allowed")
             return
         await websocket.accept()
-        await websocket.send_json({"type": "authenticate"})
+        await _send_message(websocket, StreamAuthenticatePrompt())
         try:
             initial_message = await websocket.receive()
             if initial_message["type"] == "websocket.disconnect":
                 return
             session_token = _read_session_token(initial_message.get("text"))
             if session_token is None:
-                await websocket.send_json({"type": "error", "detail": "authenticate with a signed session token first"})
+                await _send_message(websocket, StreamErrorMessage(detail="authenticate with a signed session token first"))
                 await websocket.close(code=1008)
                 return
             try:
@@ -275,7 +359,7 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
             except DemoSessionError:
                 await websocket.close(code=1008, reason="invalid or expired session")
                 return
-            await websocket.send_json({"type": "ready", "max_frame_bytes": service.config.max_frame_bytes})
+            await _send_message(websocket, StreamReadyMessage(max_frame_bytes=service.config.max_frame_bytes))
             while True:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
@@ -285,27 +369,27 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
                     try:
                         progress = service.observe(session_token, _decode_bgr(payload, service.config.max_frame_bytes, kind="frame"))
                     except DemoRateLimitError as error:
-                        await websocket.send_json({"type": "warning", "code": "frame_rate_limited", "detail": str(error)})
+                        await _send_message(websocket, StreamWarningMessage(code="frame_rate_limited", detail=str(error)))
                     except (DemoSessionError, ValueError) as error:
-                        await websocket.send_json({"type": "error", "detail": str(error)})
+                        await _send_message(websocket, StreamErrorMessage(detail=str(error)))
                         await websocket.close(code=1008)
                         return
                     else:
-                        await websocket.send_json({"type": "progress", **progress})
+                        await _send_message(websocket, progress)
                     continue
                 command = _read_command(message.get("text"))
                 if command == "finish":
                     try:
-                        await websocket.send_json({"type": "result", "result": service.finish(session_token)})
+                        await _send_message(websocket, StreamResultMessage(result=service.finish(session_token)))
                     except DemoSessionError as error:
-                        await websocket.send_json({"type": "error", "detail": str(error)})
+                        await _send_message(websocket, StreamErrorMessage(detail=str(error)))
                     await websocket.close(code=1000)
                     return
                 if command == "cancel":
                     service.cancel(session_token)
                     await websocket.close(code=1000)
                     return
-                await websocket.send_json({"type": "error", "detail": "expected a binary JPEG frame, finish, or cancel"})
+                await _send_message(websocket, StreamErrorMessage(detail="expected a binary JPEG frame, finish, or cancel"))
         except WebSocketDisconnect:
             return
 
@@ -333,15 +417,18 @@ def _decode_bgr(payload: bytes, maximum_bytes: int, *, kind: str = "image") -> n
 
 def _read_command(payload: str | None) -> str | None:
     data = _read_json_object(payload)
-    return data.get("type") if data and isinstance(data.get("type"), str) else None
+    try:
+        return StreamCommandRequest.model_validate(data).type
+    except ValidationError:
+        return None
 
 
 def _read_session_token(payload: str | None) -> str | None:
     data = _read_json_object(payload)
-    if not data or data.get("type") != "authenticate":
+    try:
+        return StreamAuthenticateRequest.model_validate(data).session_token
+    except ValidationError:
         return None
-    token = data.get("session_token")
-    return token if isinstance(token, str) else None
 
 
 def _read_json_object(payload: str | None) -> dict[str, object] | None:
@@ -354,6 +441,10 @@ def _read_json_object(payload: str | None) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
+async def _send_message(websocket: Any, message: _MessageModel) -> None:
+    await websocket.send_json(message.model_dump(mode="json"))
+
+
 def _is_allowed_origin(origin: str | None, allowed_origins: tuple[str, ...]) -> bool:
     """Allow non-browser test clients, but reject every supplied foreign origin."""
     return origin is None or origin in allowed_origins
@@ -364,25 +455,25 @@ def _require_allowed_origin(origin: str | None, allowed_origins: tuple[str, ...]
         raise DemoOriginError("origin is not allowed")
 
 
-def _run_json(run: VerificationRun) -> dict[str, object]:
+def _run_json(run: VerificationRun) -> VerificationResultResponse:
     result = run.result
-    return {
-        "challenges": list(run.challenges),
-        "matched": result.matched,
-        "similarity": result.similarity,
-        "reasons": list(result.reasons),
-        "liveness": {
-            "passed": result.liveness.passed,
-            "confidence": result.liveness.confidence,
-            "completed_challenges": [challenge.value for challenge in result.liveness.completed_challenges],
-            "warnings": list(result.liveness.warnings),
-            "reasons": list(result.liveness.reasons),
-            "frames_seen": result.liveness.frames_seen,
-        },
-    }
+    return VerificationResultResponse(
+        challenges=list(run.challenges),
+        matched=result.matched,
+        similarity=result.similarity,
+        reasons=list(result.reasons),
+        liveness=LivenessResponse(
+            passed=result.liveness.passed,
+            confidence=result.liveness.confidence,
+            completed_challenges=[challenge.value for challenge in result.liveness.completed_challenges],
+            warnings=list(result.liveness.warnings),
+            reasons=list(result.liveness.reasons),
+            frames_seen=result.liveness.frames_seen,
+        ),
+    )
 
 
-def main() -> None:
+def main(*, host: str = "127.0.0.1") -> None:
     parser = argparse.ArgumentParser(description="Run the local face-liveness-check browser integration example")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--cache-dir", type=Path)
@@ -412,8 +503,7 @@ def main() -> None:
         max_frame_bytes=arguments.max_frame_bytes,
         port=arguments.port,
     )
-    # The example deliberately cannot bind a public network interface.
-    uvicorn.run(create_app(config), host="127.0.0.1", port=arguments.port)
+    uvicorn.run(create_app(config), host=host, port=arguments.port)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -46,6 +48,12 @@ def _service(server, **config_values):
     return service
 
 
+def _prerecorded_frame() -> tuple[dict[str, object], bytes]:
+    fixture_path = Path(__file__).parent / "fixtures" / "web_demo" / "synthetic_prerecorded_frame.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    return fixture, base64.b64decode(fixture["payload_base64"])
+
+
 def test_browser_demo_serves_ui_and_memory_only_health_status():
     server = _demo_server()
     app = server.create_app(server.DemoConfig())
@@ -62,6 +70,17 @@ def test_browser_demo_serves_ui_and_memory_only_health_status():
     assert "captureFrame" in script.text
 
 
+def test_typed_stream_models_reject_unexpected_request_fields():
+    server = _demo_server()
+    health = server.DemoService(server.DemoConfig()).health()
+
+    assert isinstance(health, server.HealthResponse)
+    assert server._read_session_token('{"type":"authenticate","session_token":"token"}') == "token"
+    assert server._read_session_token('{"type":"authenticate","session_token":"token","extra":true}') is None
+    assert server._read_command('{"type":"finish"}') == "finish"
+    assert server._read_command('{"type":"finish","extra":true}') is None
+
+
 def test_signed_session_token_rejects_tampering_and_enforces_frame_rate(monkeypatch):
     server = _demo_server()
     monotonic_times = iter((10.0, 10.0, 10.0, 10.0, 10.0, 10.1, 10.1))
@@ -71,7 +90,7 @@ def test_signed_session_token_rejects_tampering_and_enforces_frame_rate(monkeypa
 
     service.authorize(token)
     assert challenges == ("blink", "turn_left")
-    assert service.observe(token, np.zeros((2, 2, 3), dtype=np.uint8))["frames_seen"] == 1
+    assert service.observe(token, np.zeros((2, 2, 3), dtype=np.uint8)).frames_seen == 1
     with pytest.raises(server.DemoRateLimitError):
         service.observe(token, np.zeros((2, 2, 3), dtype=np.uint8))
     with pytest.raises(server.DemoSessionError):
@@ -97,3 +116,30 @@ def test_websocket_requires_local_origin_and_accepts_a_signed_active_session():
         with client.websocket_connect(path, headers={"origin": "https://example.test"}):
             pass
     assert disconnect.value.code == 1008
+
+
+def test_websocket_replays_a_prerecorded_non_biometric_frame(monkeypatch):
+    server = _demo_server()
+    fixture, payload = _prerecorded_frame()
+    assert fixture["subject"] == "synthetic non-biometric test pattern"
+    service = _service(server, port=8124)
+    token, _ = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
+    app = server.create_app(server.DemoConfig(session_secret="test-signing-secret", port=8124), service=service)
+    client = TestClient(app)
+
+    def decode_frame(frame_payload, *_args, **_kwargs):
+        assert frame_payload == payload
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(server, "_decode_bgr", decode_frame)
+    with client.websocket_connect("/api/stream", headers={"origin": "http://127.0.0.1:8124"}) as websocket:
+        assert websocket.receive_json() == {"type": "authenticate"}
+        websocket.send_json({"type": "authenticate", "session_token": token})
+        assert websocket.receive_json()["type"] == "ready"
+        websocket.send_bytes(payload)
+        assert websocket.receive_json() == {
+            "type": "progress",
+            "frames_seen": 1,
+            "completed_challenges": [],
+            "warnings": [],
+        }

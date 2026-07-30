@@ -13,6 +13,22 @@ current local origin, limits every frame to 1 MB, and accepts at most two frames
 per second by default. The service is intentionally bound to `127.0.0.1`; it
 cannot be exposed with a host flag.
 
+## Typed FastAPI and WebSocket contracts
+
+[`server.py`](server.py) is the reference FastAPI/WebSocket integration. Its
+Pydantic request and response models are strict (`extra="forbid"`) and cover
+health, session creation, authentication, commands, progress, warnings, errors,
+and final verification results. Use these names when adapting the example:
+
+- `HealthResponse` and `SessionStartResponse` for HTTP endpoints.
+- `StreamAuthenticateRequest` and `StreamCommandRequest` for browser messages.
+- `StreamReadyMessage`, `StreamProgressMessage`, `StreamWarningMessage`,
+  `StreamErrorMessage`, and `StreamResultMessage` for server messages.
+
+The HTTP endpoints declare their `response_model`, while WebSocket messages are
+validated before parsing or sending. This makes the example a concrete contract
+for an integrator without adding FastAPI or Pydantic to the published package.
+
 Install from the repository checkout:
 
 ```powershell
@@ -66,6 +82,40 @@ python examples/web_demo/server.py --session-secret-env FACE_LIVENESS_DEMO_SESSI
 `GET /api/health` reports the active limits, local allowed origins, model-pack
 state, and the memory-only retention guarantee. It deliberately never reports
 the signing secret or session tokens.
+
+## Docker demo
+
+The included Docker configuration still publishes only to the local machine.
+From the repository root, build and run it with the model licence acceptance
+that you reviewed:
+
+```powershell
+docker build -f examples/web_demo/Dockerfile -t face-liveness-check-demo .
+docker run --rm -p 127.0.0.1:8000:8000 `
+  -v face-liveness-model-cache:/root/.cache/face-liveness-check/models `
+  face-liveness-check-demo --download-models --accept-model-license
+```
+
+Then open <http://127.0.0.1:8000>. The named volume reuses checksum-verified
+models on later runs, so omit `--download-models` after the first one. A compose
+configuration is also available:
+
+```powershell
+docker compose -f examples/web_demo/docker-compose.yml run --rm --service-ports `
+  web-demo --download-models --accept-model-license
+```
+
+The container listens on `0.0.0.0` only inside Docker because that is required
+for port forwarding; `docker-compose.yml` and the documented command bind it to
+`127.0.0.1` on the host. Do not change that mapping to a public interface.
+
+## Replay-test fixtures
+
+The WebSocket integration test replays a generated prerecorded frame from
+[`tests/fixtures/web_demo`](../../tests/fixtures/web_demo). It is deliberately
+non-biometric. The fixture README defines the provenance and consent gate for a
+separate, restricted real-person fixture pack; do not add real face recordings
+to this public repository without explicit redistribution consent.
 
 Do not treat this example as an internet-facing authentication service. A real
 deployment still needs application authentication and authorization, TLS,
