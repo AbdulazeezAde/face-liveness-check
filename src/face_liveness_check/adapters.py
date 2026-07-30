@@ -84,20 +84,23 @@ class OnnxPassiveAntiSpoof:
     def __init__(
         self, model_path: str | Path, *, providers: Sequence[str] | None = None,
         input_size: tuple[int, int] = (80, 80), positive_index: int = 1,
-        output_is_logits: bool = True, color_order: str = "RGB", session: object | None = None,
+        output_is_logits: bool = True, color_order: str = "RGB", resize_mode: str = "stretch",
+        session: object | None = None,
     ) -> None:
         if color_order not in {"BGR", "RGB"}:
             raise ValueError("color_order must be BGR or RGB")
+        if resize_mode not in {"stretch", "letterbox_reflect"}:
+            raise ValueError("resize_mode must be stretch or letterbox_reflect")
         self.input_size, self.positive_index, self.output_is_logits = input_size, positive_index, output_is_logits
-        self.color_order = color_order
+        self.color_order, self.resize_mode = color_order, resize_mode
         self._session = session or _load_session(model_path, providers)
         self._input_name = self._session.get_inputs()[0].name
 
     def score(self, face_bgr: np.ndarray) -> float:
         cv2 = _opencv()
-        resized = cv2.resize(face_bgr, self.input_size, interpolation=cv2.INTER_LINEAR)
-        pixels = resized if self.color_order == "BGR" else cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        tensor = np.transpose(pixels.astype(np.float32) / 255.0, (2, 0, 1))[None, ...]
+        pixels = face_bgr if self.color_order == "BGR" else cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
+        resized = _resize_pad_input(pixels, self.input_size, self.resize_mode, cv2)
+        tensor = np.transpose(resized.astype(np.float32) / 255.0, (2, 0, 1))[None, ...]
         output = np.asarray(self._session.run(None, {self._input_name: tensor})[0]).reshape(-1)
         return self.score_output(output, self.positive_index, self.output_is_logits)
 
@@ -112,6 +115,21 @@ class OnnxPassiveAntiSpoof:
         if not 0.0 <= score <= 1.0:
             raise ValueError("PAD model output must be a probability or logits")
         return score
+
+
+def _resize_pad_input(image: np.ndarray, size: tuple[int, int], mode: str, cv2: object) -> np.ndarray:
+    if mode == "stretch":
+        return cv2.resize(image, size, interpolation=cv2.INTER_LINEAR)
+    target_width, target_height = size
+    height, width = image.shape[:2]
+    scale = min(target_width / width, target_height / height)
+    resized_width, resized_height = max(1, round(width * scale)), max(1, round(height * scale))
+    resized = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4 if scale > 1 else cv2.INTER_AREA)
+    left = (target_width - resized_width) // 2
+    right = target_width - resized_width - left
+    top = (target_height - resized_height) // 2
+    bottom = target_height - resized_height - top
+    return cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_REFLECT_101)
 
 
 def _load_session(model_path: str | Path, providers: Sequence[str] | None) -> object:

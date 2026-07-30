@@ -79,3 +79,10 @@ class FrameEvidenceBuilder:
             embedding=self.embedder.embed(face),
             frame_fingerprint=fingerprint,
         )
+
+    def extract_face_crop(self, frame_bgr: np.ndarray) -> np.ndarray | None:
+        """Return one live face crop for opt-in evidence capture, or ``None``."""
+        detections = list(self.detector.detect(frame_bgr))
+        if len(detections) != 1:
+            return None
+        return detections[0].crop(frame_bgr, padding=0.10)

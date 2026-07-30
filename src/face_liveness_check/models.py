@@ -15,6 +15,13 @@ class Challenge(str, Enum):
     NOD = "nod"
 
 
+class PassiveAntiSpoofMode(str, Enum):
+    """How passive PAD contributes to the verification decision."""
+
+    REQUIRED = "required"
+    ADVISORY = "advisory"
+
+
 @dataclass(frozen=True, slots=True)
 class LivenessPolicy:
     """Thresholds must be calibrated using genuine and attack samples."""
@@ -27,6 +34,7 @@ class LivenessPolicy:
     max_duplicate_ratio: float = 0.20
     min_match_similarity: float = 0.42
     minimum_live_embeddings: int = 3
+    passive_antispoof_mode: PassiveAntiSpoofMode = PassiveAntiSpoofMode.REQUIRED
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +64,7 @@ class LivenessResult:
     completed_challenges: tuple[Challenge, ...]
     reasons: tuple[str, ...]
     frames_seen: int
+    warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True, slots=True)

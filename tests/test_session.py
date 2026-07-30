@@ -5,6 +5,9 @@ import pytest
 
 from face_liveness_check import (
     Challenge,
+    EvidenceArtifact,
+    EvidenceEvent,
+    EvidencePolicy,
     FrameEvidence,
     LivenessPolicy,
     LivenessSession,
@@ -15,6 +18,13 @@ from face_liveness_check import (
     ModelPackRegistry,
     default_registry,
     extract_reference_face_crop,
+    PadCandidate,
+    PadEvaluator,
+    PadLabel,
+    PassiveAntiSpoofMode,
+    S3EvidenceSink,
+    append_observation,
+    summarize_observations,
 )
 from face_liveness_check.adapters import FaceDetection, OnnxPassiveAntiSpoof
 from face_liveness_check.activity import ActivityConfig, LandmarkActivityDetector, LandmarkIndices
@@ -66,6 +76,22 @@ def test_session_fails_without_passive_antispoof_evidence():
     assert "passive anti-spoof evidence is missing" in result.reasons
 
 
+def test_advisory_passive_pad_warns_without_failing_active_liveness():
+    policy = LivenessPolicy(
+        challenge_count=1,
+        min_face_frames=1,
+        minimum_live_embeddings=1,
+        passive_antispoof_mode=PassiveAntiSpoofMode.ADVISORY,
+    )
+    session = LivenessSession(policy)
+    session.observe(FrameEvidence(1, 1, "person-1", .9, .9, .1, motion=session.challenges[0], embedding=np.array([1.0, 0.0])))
+
+    result = session.result()
+
+    assert result.passed
+    assert result.warnings == ("passive anti-spoof check is suspicious",)
+
+
 def test_face_detection_crop_and_pad_logits_are_normalized():
     image = np.zeros((10, 10, 3), dtype=np.uint8)
     crop = FaceDetection((2, 3, 8, 9), 0.99).crop(image)
@@ -74,6 +100,47 @@ def test_face_detection_crop_and_pad_logits_are_normalized():
 
     assert crop.shape == (6, 6, 3)
     assert 0.98 < score < 0.99
+
+
+def test_pad_adapter_feeds_resized_tensor(monkeypatch):
+    class FakeCv:
+        INTER_LINEAR = 1
+        INTER_LANCZOS4 = 2
+        INTER_AREA = 3
+        COLOR_BGR2RGB = 4
+        BORDER_REFLECT_101 = 5
+
+        @staticmethod
+        def resize(image, size, interpolation):
+            return np.zeros((size[1], size[0], 3), dtype=np.uint8)
+
+        @staticmethod
+        def cvtColor(image, code):
+            return image
+
+    class Input:
+        name = "input"
+
+    class Session:
+        def __init__(self):
+            self.tensor = None
+
+        @staticmethod
+        def get_inputs():
+            return [Input()]
+
+        def run(self, _, values):
+            self.tensor = values["input"]
+            return [np.array([[2.0, -2.0]])]
+
+    import face_liveness_check.adapters as adapters
+
+    monkeypatch.setattr(adapters, "_opencv", lambda: FakeCv)
+    session = Session()
+    adapter = OnnxPassiveAntiSpoof("unused.onnx", session=session, input_size=(80, 80), positive_index=0)
+    adapter.score(np.zeros((9, 7, 3), dtype=np.uint8))
+
+    assert session.tensor.shape == (1, 3, 80, 80)
 
 
 def test_landmark_detector_emits_blink_after_close_then_open():
@@ -85,6 +152,18 @@ def test_landmark_detector_emits_blink_after_close_then_open():
     assert detector.observe(open_face) is None
     assert detector.observe(closed_face) is None
     assert detector.observe(open_face) == Challenge.BLINK
+
+
+def test_landmark_detector_requires_neutral_pose_before_turn():
+    indices = LandmarkIndices(left_eye=(0, 1, 2, 3, 4, 5), right_eye=(6, 7, 8, 9, 10, 11), nose_tip=12, left_cheek=13, right_cheek=14)
+    detector = LandmarkActivityDetector(ActivityConfig(indices=indices, turn_threshold=0.2, mirrored_input=False))
+    landmarks = np.array([[0, 0], [.25, .2], [.75, .2], [1, 0], [.25, -.2], [.75, -.2]] * 2 + [[.8, .5], [0, .5], [1, .5]], dtype=np.float32)
+    neutral = landmarks.copy()
+    neutral[12, 0] = .5
+
+    assert detector.observe(landmarks) is None  # a pre-turned static image is not activity
+    assert detector.observe(neutral) is None
+    assert detector.observe(landmarks) == Challenge.TURN_RIGHT
 
 
 class _OneFaceDetector:
@@ -127,6 +206,65 @@ def test_live_verification_exposes_prompts_before_frames_are_captured():
 
     assert len(live.challenges) == 1
     assert live.challenges[0] in {challenge.value for challenge in Challenge}
+
+
+def test_suspicious_session_stores_opt_in_evidence_without_embeddings():
+    class Sink:
+        def __init__(self):
+            self.event = None
+            self.artifacts = None
+
+        def store(self, event, artifacts):
+            self.event, self.artifacts = event, artifacts
+
+    class Builder:
+        motion = None
+
+        def build(self, frame, timestamp):
+            return FrameEvidence(timestamp, 1, "person-1", .9, .9, .1, motion=self.motion, embedding=np.array([1.0, 0.0]))
+
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    sink, builder = Sink(), Builder()
+    verifier = LivenessVerifier(
+        ReferenceExtractor(_OneFaceDetector(), _Embedder()),
+        builder,
+        LivenessPolicy(challenge_count=1, min_face_frames=1, minimum_live_embeddings=1, passive_antispoof_mode=PassiveAntiSpoofMode.ADVISORY),
+        evidence_policy=EvidencePolicy(enabled=True, capture_on={"suspicious"}, max_frames=1),
+        evidence_sink=sink,
+    )
+    with pytest.raises(PermissionError, match="evidence_consent"):
+        verifier.start(image)
+
+    live = verifier.start(image, evidence_consent=True, session_id="session_001")
+    builder.motion = live.session.challenges[0]
+    live.observe(image, 1)
+    run = live.finish()
+
+    assert run.result.matched
+    assert sink.event.session_id == "session_001"
+    assert sink.event.categories == ("suspicious",)
+    assert len(sink.artifacts) == 1
+    assert b"embedding" not in sink.artifacts[0].data
+
+
+def test_s3_sink_uses_kms_for_metadata_and_artifacts():
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def put_object(self, **kwargs):
+            self.calls.append(kwargs)
+
+    client = Client()
+    sink = S3EvidenceSink("evidence-bucket", kms_key_id="key-123", prefix="liveness", client=client)
+    event = EvidenceEvent.create(
+        session_id="session_001", categories=("suspicious",), matched=True, liveness_passed=True,
+        similarity=.9, liveness_reasons=(), liveness_warnings=("passive anti-spoof check is suspicious",), retention_days=30,
+    )
+    sink.store(event, [EvidenceArtifact("frame_000", "application/x-npy", b"frame")])
+
+    assert [call["Key"] for call in client.calls] == ["liveness/session_001/event.json", "liveness/session_001/frame_000.npy"]
+    assert all(call["ServerSideEncryption"] == "aws:kms" and call["SSEKMSKeyId"] == "key-123" for call in client.calls)
 
 
 def test_model_pack_install_records_license_and_offline_resolution_rechecks_checksums(tmp_path):
@@ -173,12 +311,33 @@ def test_reference_crop_requires_one_face_without_opencv_runtime():
         extract_reference_face_crop(image, NoFace())
 
 
-def test_cli_parses_model_install_and_webcam_commands():
+def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
     parser = build_parser()
     install = parser.parse_args(["models", "install", "opencv-default", "--accept-model-license"])
     webcam = parser.parse_args(["webcam", "id.png", "--download", "--duration", "12"])
+    evaluation = parser.parse_args(["evaluate-webcam", "--label", "replay", "--output", "scores.jsonl", "--candidate", "facenox_experimental"])
 
     assert install.name == "opencv-default"
     assert install.accept_model_license
     assert webcam.reference.name == "id.png"
     assert webcam.duration == 12
+    assert evaluation.label == "replay"
+    assert evaluation.output.name == "scores.jsonl"
+    assert evaluation.candidate == ["facenox_experimental"]
+
+
+def test_pad_evaluation_records_scores_without_source_paths(tmp_path):
+    class Scorer:
+        def score(self, crop):
+            return 0.9
+
+    evaluator = PadEvaluator(_OneFaceDetector(), [PadCandidate("candidate", Scorer(), 0.1)])
+    observation = evaluator.observe(np.zeros((4, 4, 3), dtype=np.uint8), sample_id="genuine-001", label=PadLabel.GENUINE)
+    output = append_observation(tmp_path / "scores.jsonl", observation)
+
+    assert observation.scores == {"candidate": 0.9}
+    assert "source" not in output.read_text(encoding="utf-8")
+    assert summarize_observations(output, {"candidate": 0.8})["candidate"]["genuine_accept_rate"] == 1.0
+
+    with pytest.raises(ValueError, match="not a file path"):
+        evaluator.observe(np.zeros((4, 4, 3), dtype=np.uint8), sample_id="C:/id.jpg", label=PadLabel.GENUINE)

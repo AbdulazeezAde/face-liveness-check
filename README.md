@@ -95,6 +95,32 @@ providing their own detection, identity, and landmark models.
 Dense landmarks are intentionally required for the active default policy; blink
 and nod are not silently replaced with weak image-motion heuristics.
 
+## PAD evaluation
+
+Do not choose a passive PAD model from a single webcam session. The package
+includes a score-only `PadEvaluator` for comparing candidates on the same
+labelled samples. Its JSONL output contains only an opaque sample ID, consented
+attack label, timestamp, face count, and scores—never frames, face crops,
+embeddings, document paths, or identity data.
+
+`pad-facenox-experimental` is an independently trained, Apache-2.0 binary PAD
+candidate. It uses 128×128 RGB letterboxed inputs and is deliberately separate
+from `opencv-default`: its reported benchmark must be reproduced on the target
+cameras and attacks before it can become a default.
+
+Evaluate genuine, print, screen-replay, and mask samples with a consistent
+consented protocol. Select thresholds from the recorded genuine-accept and
+attack-reject rates, not from one model's claimed accuracy.
+
+Use the score-only webcam collector to create labelled records. The label must
+describe what is physically presented to the camera: use `replay` only while a
+portrait is displayed on a separate screen, or `print` for a printed portrait.
+
+```bash
+face-liveness-check evaluate-webcam --label genuine --output pad-scores.jsonl --download --accept-model-license
+face-liveness-check evaluate-webcam --label replay --output pad-scores.jsonl --download --accept-model-license
+```
+
 ## Command line and webcam demo
 
 Install the model pack after reviewing its licence notice:
@@ -120,6 +146,45 @@ page and does not upload or retain ID images.
 ```bash
 face-liveness-check webcam id.pdf --download --accept-model-license
 ```
+
+## Optional evidence storage
+
+Evidence retention is disabled by default. To record only failed or suspicious
+sessions, the integrator must explicitly enable a policy, provide a sink, and
+pass explicit consent for each session. Reference images and embeddings are
+never captured by this feature.
+
+```python
+from face_liveness_check import (
+    EvidencePolicy, LivenessPolicy, LocalEncryptedEvidenceSink,
+    PassiveAntiSpoofMode,
+)
+
+sink = LocalEncryptedEvidenceSink("./encrypted-evidence", key=key_from_a_secret_manager)
+verifier = LivenessVerifier(
+    reference_extractor,
+    evidence_builder,
+    LivenessPolicy(passive_antispoof_mode=PassiveAntiSpoofMode.ADVISORY),
+    evidence_policy=EvidencePolicy(
+        enabled=True,
+        capture_on={"suspicious", "failed"},
+        capture_frames=True,
+        capture_face_crops=True,
+        max_frames=3,
+        retention_days=30,
+    ),
+    evidence_sink=sink,
+)
+run = verifier.verify(id_portrait_bgr, live_frames(), evidence_consent=True)
+```
+
+Install `face-liveness-check[evidence-local]` for encrypted local files. The
+local sink writes encrypted event metadata and NPY image artifacts; keep its
+Fernet key in a separate secret manager and delete evidence at the recorded
+retention deadline. For AWS, install `face-liveness-check[evidence-s3]` and use
+`S3EvidenceSink(bucket, kms_key_id="...")`; it writes objects with SSE-KMS.
+Bucket lifecycle rules, IAM access, KMS permissions, consent, and regional
+biometric-data obligations remain the integrator's responsibility.
 
 ## Security notes
 

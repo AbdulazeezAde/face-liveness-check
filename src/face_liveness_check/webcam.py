@@ -18,12 +18,14 @@ def verify_webcam(
     duration_s: float = 15.0,
     preview: bool = True,
     on_challenges: Callable[[tuple[str, ...]], None] | None = None,
+    evidence_consent: bool = False,
+    session_id: str | None = None,
 ) -> VerificationRun:
     """Run a short webcam session; press ``q`` in the preview to finish early."""
     if duration_s <= 0:
         raise ValueError("duration_s must be positive")
     cv2 = _opencv()
-    live = verifier.start(reference_image_bgr)
+    live = verifier.start(reference_image_bgr, evidence_consent=evidence_consent, session_id=session_id)
     if on_challenges:
         on_challenges(live.challenges)
     capture = cv2.VideoCapture(source)
