@@ -23,9 +23,15 @@ from face_liveness_check import (
     PadEvaluator,
     PadLabel,
     PassiveAntiSpoofMode,
+    ReviewEvent,
+    ReviewPolicy,
     S3EvidenceSink,
+    WebhookReviewSink,
+    active_first_profile,
     append_observation,
     active_first_policy,
+    evaluation_profile,
+    strict_profile,
     summarize_observations,
 )
 from face_liveness_check.adapters import FaceDetection, OnnxPassiveAntiSpoof
@@ -105,6 +111,19 @@ def test_active_first_policy_keeps_secure_default_thresholds_but_makes_pad_advis
 
     assert policy.challenge_count == 2
     assert policy.passive_antispoof_mode is PassiveAntiSpoofMode.ADVISORY
+
+
+def test_verification_profiles_make_decision_intent_explicit():
+    strict = strict_profile(challenge_count=2)
+    active = active_first_profile(challenge_count=2)
+    evaluation = evaluation_profile(challenge_count=2)
+
+    assert strict.name.value == "strict" and strict.allows_automatic_decision
+    assert strict.policy.passive_antispoof_mode is PassiveAntiSpoofMode.REQUIRED
+    assert active.name.value == "active_first" and active.allows_automatic_decision
+    assert active.policy.passive_antispoof_mode is PassiveAntiSpoofMode.ADVISORY
+    assert evaluation.name.value == "evaluation" and not evaluation.allows_automatic_decision
+    assert evaluation.policy.passive_antispoof_mode is PassiveAntiSpoofMode.ADVISORY
 
 
 def test_face_detection_crop_and_pad_logits_are_normalized():
@@ -260,6 +279,87 @@ def test_suspicious_session_stores_opt_in_evidence_without_embeddings():
     assert sink.event.categories == ("suspicious",)
     assert len(sink.artifacts) == 1
     assert b"embedding" not in sink.artifacts[0].data
+
+
+def test_suspicious_active_first_session_dispatches_metadata_only_review_event():
+    class Sink:
+        def __init__(self):
+            self.events = []
+
+        def publish(self, event):
+            self.events.append(event)
+
+    class Builder:
+        motion = None
+
+        def build(self, frame, timestamp):
+            return FrameEvidence(timestamp, 1, "person-1", .9, .9, .1, motion=self.motion, embedding=np.array([1.0, 0.0]))
+
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    sink, builder = Sink(), Builder()
+    verifier = LivenessVerifier(
+        ReferenceExtractor(_OneFaceDetector(), _Embedder()),
+        builder,
+        profile=active_first_profile(challenge_count=1, min_face_frames=1, minimum_live_embeddings=1),
+        review_policy=ReviewPolicy(enabled=True),
+        review_sink=sink,
+    )
+    live = verifier.start(image, session_id="session_002")
+    builder.motion = live.session.challenges[0]
+    live.observe(image, 1)
+    run = live.finish()
+
+    assert run.profile == "active_first"
+    assert run.automatic_decision_allowed
+    assert len(sink.events) == 1
+    event = sink.events[0]
+    assert event.disposition == "suspicious"
+    assert event.session_id == "session_002"
+    assert event.profile == "active_first"
+    assert b"embedding" not in event.payload()
+    assert b"frame" not in event.payload()
+
+
+def test_evaluation_profile_disables_automatic_decisions_and_webhook_is_signed():
+    event = ReviewEvent.create(
+        event_id="event_001",
+        session_id="session_003",
+        profile="evaluation",
+        automatic_decision_allowed=False,
+        matched=True,
+        liveness_passed=True,
+        similarity=.9,
+        liveness_reasons=(),
+        liveness_warnings=(),
+    )
+
+    class Response:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def getcode(self):
+            return self.status
+
+    calls = []
+
+    def opener(request, *, timeout):
+        calls.append((request, timeout))
+        return Response()
+
+    sink = WebhookReviewSink("https://review.example.test/events", signing_key="review-key", opener=opener)
+    sink.publish(event)
+
+    request, timeout = calls[0]
+    assert timeout == 5.0
+    assert request.data == event.payload()
+    assert request.get_header("X-face-liveness-event-id") == "event_001"
+    assert request.get_header("X-face-liveness-signature").startswith("sha256=")
+    assert event.automatic_decision_allowed is False
 
 
 def test_s3_sink_uses_kms_for_metadata_and_artifacts():

@@ -124,6 +124,41 @@ providing their own detection, identity, and landmark models.
 Dense landmarks are intentionally required for the active default policy; blink
 and nod are not silently replaced with weak image-motion heuristics.
 
+## Verification profiles and manual review events
+
+Choose an explicit profile so deployments do not accidentally treat an
+evaluation or advisory run as a strict decision:
+
+```python
+from face_liveness_check import (
+    ReviewPolicy, WebhookReviewSink, active_first_profile,
+    create_opencv_verifier_from_pack,
+)
+
+verifier = create_opencv_verifier_from_pack(
+    installed_pack,
+    profile=active_first_profile(),
+    review_policy=ReviewPolicy(enabled=True, dispatch_on={"failed", "suspicious"}),
+    review_sink=WebhookReviewSink(
+        "https://review.example.com/liveness-events",
+        signing_key=secret_from_your_secret_manager,
+    ),
+)
+```
+
+- `strict_profile()` requires passive PAD and all other configured checks.
+- `active_first_profile()` keeps active challenges, quality, replay, and identity
+  gates required while treating low/missing passive PAD as a suspicious signal.
+- `evaluation_profile()` uses the advisory signal path but sets
+  `VerificationRun.automatic_decision_allowed` to `False`; never automatically
+  accept or reject from this profile.
+
+Review dispatch is disabled by default. When enabled, it sends a signed JSON
+summary containing opaque IDs, outcome, profile, decision eligibility, scores,
+reasons, and warnings. It never sends reference images, live frames, crops,
+embeddings, document paths, or evidence artifacts. Webhook delivery failures
+raise rather than silently discarding a needed manual-review signal.
+
 ## PAD evaluation
 
 Do not choose a passive PAD model from a single webcam session. The package

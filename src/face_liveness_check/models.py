@@ -23,6 +23,14 @@ class PassiveAntiSpoofMode(str, Enum):
     ADVISORY = "advisory"
 
 
+class VerificationProfileName(str, Enum):
+    """Named decision modes with intentionally different operational meaning."""
+
+    STRICT = "strict"
+    ACTIVE_FIRST = "active_first"
+    EVALUATION = "evaluation"
+
+
 @dataclass(frozen=True, slots=True)
 class LivenessPolicy:
     """Thresholds must be calibrated using genuine and attack samples."""
@@ -47,6 +55,34 @@ def active_first_policy(**overrides: Any) -> LivenessPolicy:
     """
     overrides.setdefault("passive_antispoof_mode", PassiveAntiSpoofMode.ADVISORY)
     return LivenessPolicy(**overrides)
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationProfile:
+    """A policy plus whether its output may be used for an automatic decision."""
+
+    name: VerificationProfileName
+    policy: LivenessPolicy
+    allows_automatic_decision: bool
+
+
+def strict_profile(**overrides: Any) -> VerificationProfile:
+    """Require all configured signals, including passive PAD, for a decision."""
+    return VerificationProfile(VerificationProfileName.STRICT, LivenessPolicy(**overrides), True)
+
+
+def active_first_profile(**overrides: Any) -> VerificationProfile:
+    """Use active challenges as the primary gate and flag PAD concerns for review."""
+    return VerificationProfile(VerificationProfileName.ACTIVE_FIRST, active_first_policy(**overrides), True)
+
+
+def evaluation_profile(**overrides: Any) -> VerificationProfile:
+    """Run the active-first signal path but mark results as evaluation-only.
+
+    This is suitable for calibration and integration exercises, never for an
+    automated acceptance or rejection decision.
+    """
+    return VerificationProfile(VerificationProfileName.EVALUATION, active_first_policy(**overrides), False)
 
 
 @dataclass(frozen=True, slots=True)

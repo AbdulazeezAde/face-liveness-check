@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from face_liveness_check import (
     LivenessVerifier,
     ModelPackManager,
-    active_first_policy,
+    active_first_profile,
     create_opencv_verifier_from_pack,
     default_registry,
 )
@@ -112,6 +112,8 @@ class LivenessResponse(_MessageModel):
 
 class VerificationResultResponse(_MessageModel):
     challenges: list[str]
+    profile: str
+    automatic_decision_allowed: bool
     matched: bool
     similarity: float | None
     reasons: list[str]
@@ -281,7 +283,7 @@ class DemoService:
                 manager.install(self.config.model_pack, accept_model_license=self.config.accept_model_license)
                 if self.config.download_models else manager.resolve(self.config.model_pack)
             )
-            self._verifier = create_opencv_verifier_from_pack(installed, policy=active_first_policy())
+            self._verifier = create_opencv_verifier_from_pack(installed, profile=active_first_profile())
         return self._verifier
 
 
@@ -459,6 +461,8 @@ def _run_json(run: VerificationRun) -> VerificationResultResponse:
     result = run.result
     return VerificationResultResponse(
         challenges=list(run.challenges),
+        profile=run.profile,
+        automatic_decision_allowed=run.automatic_decision_allowed,
         matched=result.matched,
         similarity=result.similarity,
         reasons=list(result.reasons),
