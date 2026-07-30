@@ -62,9 +62,11 @@ def test_browser_demo_serves_ui_and_memory_only_health_status():
     assert "captureFrame" in script.text
 
 
-def test_signed_session_token_rejects_tampering_and_enforces_frame_rate():
+def test_signed_session_token_rejects_tampering_and_enforces_frame_rate(monkeypatch):
     server = _demo_server()
-    service = _service(server, max_frame_rate_hz=1_000_000_000)
+    monotonic_times = iter((10.0, 10.0, 10.0, 10.0, 10.0, 10.1, 10.1))
+    monkeypatch.setattr(server.time, "monotonic", lambda: next(monotonic_times))
+    service = _service(server, max_frame_rate_hz=2)
     token, challenges = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
 
     service.authorize(token)
