@@ -1,15 +1,17 @@
 # Browser integration demo
 
-This local FastAPI demo proves the browser-to-package integration: the browser
+This local FastAPI example proves the browser-to-package integration: the browser
 uploads one reference portrait, sends sampled webcam frames to the local Python
 process, and displays the active liveness and identity result. It uses the
 active-first policy, so PAD warnings are shown but do not by themselves reject a
-session. Evidence retention is disabled.
+session. Evidence retention is disabled. It is development-only: it is not an
+installed CLI command, and it is not included in the package wheel.
 
 Install from the repository checkout:
 
 ```powershell
-python -m pip install -e ".[full,demo]"
+python -m pip install -e ".[full]"
+python -m pip install -r examples/web_demo/requirements.txt
 python examples/web_demo/server.py --download-models --accept-model-license
 ```
 
