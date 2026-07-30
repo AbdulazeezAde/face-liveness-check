@@ -9,6 +9,7 @@ import pytest
 from face_liveness_check import (
     Challenge,
     BarcodePayload,
+    DocumentLivenessVerifier,
     DocumentQuality,
     DocumentType,
     EvidenceArtifact,
@@ -40,6 +41,7 @@ from face_liveness_check import (
     ReviewPolicy,
     S3EvidenceSink,
     WebhookReviewSink,
+    VerificationResult,
     active_first_profile,
     append_observation,
     active_first_policy,
@@ -52,7 +54,7 @@ from face_liveness_check.adapters import FaceDetection, OnnxPassiveAntiSpoof
 from face_liveness_check.activity import ActivityConfig, LandmarkActivityDetector, LandmarkIndices
 from face_liveness_check.cli import build_parser
 from face_liveness_check.pipeline import ReferenceExtractor
-from face_liveness_check.verifier import LivenessVerifier
+from face_liveness_check.verifier import LivenessVerifier, VerificationRun
 
 
 def test_public_version_matches_installed_package_metadata():
@@ -622,3 +624,60 @@ def test_nigeria_nin_slip_template_extracts_only_format_checked_nin():
     assert result.fields["nin"].validated
     assert result.fields["date_of_birth"].validated
     assert not result.requires_manual_review
+
+
+def test_document_liveness_verifier_gates_challenges_on_document_review():
+    first = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<"
+    second = "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+
+    class Ocr:
+        def read(self, _image):
+            return (OcrTextBlock(first, .99), OcrTextBlock(second, .98))
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    class Live:
+        challenges = ("blink", "turn_left")
+
+        def __init__(self):
+            self.observed = []
+
+        def observe(self, frame, timestamp):
+            self.observed.append((frame, timestamp))
+
+        def finish(self):
+            liveness = type("Liveness", (), {"reasons": (), "passed": True})()
+            result = VerificationResult(True, .9, liveness)
+            return VerificationRun(result, self.challenges)
+
+    class Verifier:
+        def __init__(self):
+            self.reference = None
+            self.live = Live()
+
+        def start(self, reference, **_):
+            self.reference = reference
+            return self.live
+
+    document = np.zeros((100, 160, 3), dtype=np.uint8)
+    verifier = Verifier()
+    service = DocumentLivenessVerifier(IdDocumentExtractor(Ocr(), normalizer=Normalizer(), detector=_OneFaceDetector()), verifier)
+
+    live = service.start(document)
+    live.observe(document, 1.0)
+    run = live.finish()
+
+    assert live.challenges == ("blink", "turn_left")
+    assert verifier.reference.shape == (4, 4, 3)
+    assert run.matched and run.automatic_decision_allowed
+
+    class UnknownOcr:
+        def read(self, _image):
+            return (OcrTextBlock("unrecognised document", .9),)
+
+    blocked = DocumentLivenessVerifier(IdDocumentExtractor(UnknownOcr(), normalizer=Normalizer()), verifier).start(document)
+    assert blocked.challenges == ()
+    assert blocked.requires_manual_review
+    assert "document extraction requires manual review before live verification" in blocked.reasons

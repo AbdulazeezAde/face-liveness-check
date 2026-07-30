@@ -15,6 +15,7 @@ from .evidence import EvidenceArtifact, EvidenceEvent, EvidencePolicy, EvidenceR
 from .id_document import BarcodePayload, BarcodeReader, DocumentNormalizer, DocumentQuality, DocumentType, ExtractedField, FieldSource, IdDocumentExtractor, IdExtractionResult, LabelledCardTemplate, NigeriaNinSlipTemplate, NormalizedDocument, OcrEngine, OcrTextBlock, PassportTd3Template
 from .ocr import PaddleOcrEngine
 from .barcodes import JsonBarcodeFieldParser, ZxingBarcodeReader
+from .document_verifier import DocumentLivenessVerifier, DocumentLiveVerification, DocumentVerificationRun
 from .review import ReviewEvent, ReviewPolicy, ReviewSink, WebhookReviewSink
 
 __all__ = [
@@ -32,8 +33,11 @@ __all__ = [
     "EvidenceRetentionResult",
     "EvidenceSink",
     "DocumentNormalizer",
+    "DocumentLivenessVerifier",
+    "DocumentLiveVerification",
     "DocumentQuality",
     "DocumentType",
+    "DocumentVerificationRun",
     "ExtractedField",
     "FieldSource",
     "facenox_pad_experimental_pack",

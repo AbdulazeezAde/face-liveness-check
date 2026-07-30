@@ -103,3 +103,28 @@ that a NIN has 11 digits. It does not establish that a slip, QR code, person, or
 NIN is authentic. NIMC guidance describes scanning a NIN-slip QR code through
 its verification flow; use an authorised NIMC verification service for any
 authentication decision rather than trusting OCR or a locally decoded barcode.
+
+## Joining an ID document to active liveness
+
+Use `DocumentLivenessVerifier` to ensure that a document passes extraction
+checks and supplies exactly one usable portrait before camera challenges are
+shown. It reuses the existing `LivenessVerifier`; it does not add a weaker face
+comparison path.
+
+```python
+from face_liveness_check import DocumentLivenessVerifier
+
+service = DocumentLivenessVerifier(document_extractor, liveness_verifier)
+live = service.start("document.png")
+
+if live.requires_manual_review:
+    send_to_review(live.reasons)
+else:
+    show_challenges(live.challenges)
+    for timestamp_s, frame in camera_frames():
+        live.observe(frame, timestamp_s)
+    result = live.finish()
+```
+
+Do not start a live capture for an extraction result marked for review. This
+avoids turning an uncertain document crop into an identity-verification input.

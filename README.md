@@ -246,6 +246,11 @@ available; barcode text stays out of terminal output unless explicitly requested
 the 11-digit NIN format. It does not authenticate the slip, holder, QR code, or
 NIN; use an authorised NIMC verification service for that separate decision.
 
+Use `DocumentLivenessVerifier(document_extractor, liveness_verifier)` when a
+document-derived portrait must be gated before the existing active-liveness
+challenge flow begins. Uncertain documents return a manual-review result and no
+camera prompts.
+
 The extractor processes data locally and does not write document images, OCR
 text, fields, or crops. Read the [ID document extraction guide](docs/ID_DOCUMENT_EXTRACTION.md)
 before configuring a production OCR model or storing any extracted data.
