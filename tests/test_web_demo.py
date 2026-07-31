@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from face_liveness_check.id_document import DocumentQuality, DocumentType, ExtractedField, FieldSource, IdExtractionResult
 from starlette.websockets import WebSocketDisconnect
 
 
@@ -37,14 +38,46 @@ class _FakeLive:
         return None
 
 
-class _FakeVerifier:
-    def start(self, _reference):
-        return _FakeLive()
+def _extraction(*, review: bool = False) -> IdExtractionResult:
+    return IdExtractionResult(
+        DocumentType.NIGERIA_NIN_SLIP,
+        {"nin": ExtractedField("12345678901", .9, FieldSource.OCR, not review)},
+        DocumentQuality(True, .8, .01, ("document image appears blurred",) if review else ()),
+        None if review else np.zeros((2, 2, 3), dtype=np.uint8),
+        (),
+        (),
+        ("document image appears blurred",) if review else (),
+        review,
+    )
 
 
-def _service(server, **config_values):
+class _FakeDocumentLive:
+    def __init__(self, *, review: bool = False) -> None:
+        self.extraction = _extraction(review=review)
+        self.live = None if review else _FakeLive()
+        self.requires_manual_review = review
+
+    @property
+    def challenges(self):
+        return () if self.live is None else self.live.challenges
+
+    def observe(self, frame, timestamp) -> None:
+        if self.live is None:
+            raise RuntimeError("cannot capture before review")
+        self.live.observe(frame, timestamp)
+
+
+class _FakeDocumentVerifier:
+    def __init__(self, *, review: bool = False) -> None:
+        self.review = review
+
+    def start(self, _document, *, document_type):
+        return _FakeDocumentLive(review=self.review)
+
+
+def _service(server, *, review: bool = False, **config_values):
     service = server.DemoService(server.DemoConfig(session_secret="test-signing-secret", **config_values))
-    service._load_verifier = lambda: _FakeVerifier()
+    service._load_document_verifier = lambda: _FakeDocumentVerifier(review=review)
     return service
 
 
@@ -86,7 +119,9 @@ def test_signed_session_token_rejects_tampering_and_enforces_frame_rate(monkeypa
     monotonic_times = iter((10.0, 10.0, 10.0, 10.0, 10.0, 10.1, 10.1))
     monkeypatch.setattr(server.time, "monotonic", lambda: next(monotonic_times))
     service = _service(server, max_frame_rate_hz=2)
-    token, challenges = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
+    started = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
+    assert started.session_token is not None
+    token, challenges = started.session_token, started.challenges
 
     service.authorize(token)
     assert challenges == ("blink", "turn_left")
@@ -101,7 +136,9 @@ def test_websocket_requires_local_origin_and_accepts_a_signed_active_session():
     server = _demo_server()
     config = server.DemoConfig(session_secret="test-signing-secret", port=8123)
     service = _service(server, port=8123)
-    token, _ = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
+    started = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
+    assert started.session_token is not None
+    token = started.session_token
     app = server.create_app(config, service=service)
     client = TestClient(app)
     path = "/api/stream"
@@ -123,7 +160,9 @@ def test_websocket_replays_a_prerecorded_non_biometric_frame(monkeypatch):
     fixture, payload = _prerecorded_frame()
     assert fixture["subject"] == "synthetic non-biometric test pattern"
     service = _service(server, port=8124)
-    token, _ = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
+    started = service.start(np.zeros((2, 2, 3), dtype=np.uint8))
+    assert started.session_token is not None
+    token = started.session_token
     app = server.create_app(server.DemoConfig(session_secret="test-signing-secret", port=8124), service=service)
     client = TestClient(app)
 
@@ -143,3 +182,29 @@ def test_websocket_replays_a_prerecorded_non_biometric_frame(monkeypatch):
             "completed_challenges": [],
             "warnings": [],
         }
+
+
+def test_document_review_is_returned_before_camera_or_websocket_session(monkeypatch):
+    server = _demo_server()
+    service = _service(server, review=True)
+    app = server.create_app(server.DemoConfig(session_secret="test-signing-secret"), service=service)
+    client = TestClient(app)
+
+    async def read_document(_upload):
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(server, "_read_bgr", read_document)
+    response = client.post(
+        "/api/sessions",
+        files={"document": ("consented-id.jpg", b"not-decoded-in-this-test", "image/jpeg")},
+        data={"document_type": "nigeria_nin_slip"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_token"] is None
+    assert payload["stream_path"] is None
+    assert payload["challenges"] == []
+    assert payload["document"]["requires_manual_review"] is True
+    assert payload["document"]["portrait_available"] is False
+    assert payload["document"]["fields"]["nin"]["value"] == "12345678901"

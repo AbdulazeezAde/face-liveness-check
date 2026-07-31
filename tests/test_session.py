@@ -8,11 +8,18 @@ import pytest
 
 from face_liveness_check import (
     Challenge,
+    BarcodePayload,
+    DocumentLivenessVerifier,
+    DocumentQuality,
+    DocumentType,
     EvidenceArtifact,
     EvidenceEvent,
     EvidencePolicy,
     EvidenceRetentionResult,
     FrameEvidence,
+    IdDocumentExtractor,
+    JsonBarcodeFieldParser,
+    LabelledCardTemplate,
     LivenessPolicy,
     LivenessSession,
     ModelArtifact,
@@ -26,11 +33,15 @@ from face_liveness_check import (
     PadCalibrationResult,
     PadEvaluator,
     PadLabel,
+    NormalizedDocument,
+    NigeriaNinSlipTemplate,
+    OcrTextBlock,
     PassiveAntiSpoofMode,
     ReviewEvent,
     ReviewPolicy,
     S3EvidenceSink,
     WebhookReviewSink,
+    VerificationResult,
     active_first_profile,
     append_observation,
     active_first_policy,
@@ -43,7 +54,7 @@ from face_liveness_check.adapters import FaceDetection, OnnxPassiveAntiSpoof
 from face_liveness_check.activity import ActivityConfig, LandmarkActivityDetector, LandmarkIndices
 from face_liveness_check.cli import build_parser
 from face_liveness_check.pipeline import ReferenceExtractor
-from face_liveness_check.verifier import LivenessVerifier
+from face_liveness_check.verifier import LivenessVerifier, VerificationRun
 
 
 def test_public_version_matches_installed_package_metadata():
@@ -441,6 +452,7 @@ def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
     evaluation = parser.parse_args(["evaluate-webcam", "--label", "replay", "--output", "scores.jsonl", "--candidate", "facenox_experimental"])
     calibration = parser.parse_args(["calibrate-pad", "--input", "scores.jsonl", "--candidate", "facenox_experimental"])
     retention = parser.parse_args(["evidence-retention", "--evidence-local-dir", "evidence"])
+    extract_id = parser.parse_args(["extract-id", "passport.png", "--document-type", "passport_td3", "--read-barcodes"])
 
     assert install.name == "opencv-default"
     assert install.accept_model_license
@@ -456,6 +468,9 @@ def test_cli_parses_model_install_webcam_and_pad_evaluation_commands():
     assert calibration.candidate == ["facenox_experimental"]
     assert retention.evidence_local_dir.name == "evidence"
     assert not retention.apply
+    assert extract_id.source.name == "passport.png"
+    assert extract_id.document_type == "passport_td3"
+    assert extract_id.read_barcodes
 
 
 def test_pad_evaluation_records_scores_without_source_paths(tmp_path):
@@ -519,3 +534,150 @@ def test_local_evidence_retention_is_dry_run_by_default_and_skips_indefinite_rec
     assert not (tmp_path / "evidence" / "expired_001").exists()
     assert applied.removed_session_ids == ("expired_001",)
     assert (tmp_path / "evidence" / "indefinite_001").exists()
+
+
+def test_id_extractor_validates_passport_mrz_and_keeps_normalized_document_opt_in():
+    first = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<"
+    second = "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+
+    class Ocr:
+        def read(self, _image):
+            return (OcrTextBlock(first, .99), OcrTextBlock(second, .98))
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    image = np.zeros((100, 160, 3), dtype=np.uint8)
+    result = IdDocumentExtractor(Ocr(), normalizer=Normalizer(), detector=_OneFaceDetector()).extract(image)
+
+    assert result.document_type is DocumentType.PASSPORT_TD3
+    assert result.fields["document_number"].value == "L898902C3"
+    assert result.fields["document_number"].validated
+    assert result.fields["date_of_birth_yymmdd"].validated
+    assert result.portrait_crop_bgr.shape == (4, 4, 3)
+    assert result.normalized_document_bgr is None
+    assert not result.requires_manual_review
+
+
+def test_paddle_adapter_accepts_documented_prediction_shape_without_paddle_runtime():
+    from face_liveness_check.ocr import PaddleOcrEngine
+
+    class Runner:
+        def predict(self, _image):
+            return [{"res": {"rec_texts": ["FEDERAL REPUBLIC"], "rec_scores": [.96], "rec_polys": [[[1, 2], [3, 2], [3, 4], [1, 4]]]}}]
+
+    blocks = PaddleOcrEngine(Runner()).read(np.zeros((2, 2, 3), dtype=np.uint8))
+
+    assert blocks == (OcrTextBlock("FEDERAL REPUBLIC", .96, ((1.0, 2.0), (3.0, 2.0), (3.0, 4.0), (1.0, 4.0))),)
+
+
+def test_labelled_card_template_and_barcode_conflicts_require_manual_review():
+    class Ocr:
+        def read(self, _image):
+            return (OcrTextBlock("NIN: 12345678901", .98), OcrTextBlock("FULL NAME", .95), OcrTextBlock("Ada Example", .96))
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    class Barcodes:
+        def read(self, _image):
+            return (BarcodePayload("QR", '{"nin":"99999999999"}'),)
+
+    template = LabelledCardTemplate(
+        {"nin": ("NIN",), "full_name": ("FULL NAME",)},
+        markers=("NIN",), required_fields=("nin", "full_name"),
+        validators={"nin": lambda value: value.isdigit() and len(value) == 11},
+    )
+    result = IdDocumentExtractor(
+        Ocr(), normalizer=Normalizer(), templates=(template,), barcode_reader=Barcodes(), barcode_field_parser=JsonBarcodeFieldParser(),
+    ).extract(np.zeros((20, 30, 3), dtype=np.uint8))
+
+    assert result.document_type is DocumentType.CARD
+    assert result.fields["nin"].value == "12345678901"
+    assert result.barcodes[0].format == "QR"
+    assert "barcode value conflicts with extracted field: nin" in result.warnings
+    assert result.requires_manual_review
+
+
+def test_nigeria_nin_slip_template_extracts_only_format_checked_nin():
+    class Ocr:
+        def read(self, _image):
+            return (
+                OcrTextBlock("NATIONAL IDENTITY MANAGEMENT COMMISSION", .99),
+                OcrTextBlock("NIN: 12345678901", .98),
+                OcrTextBlock("SURNAME: Example", .97),
+                OcrTextBlock("DATE OF BIRTH: 01/02/1990", .96),
+            )
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    result = IdDocumentExtractor(Ocr(), normalizer=Normalizer(), templates=(NigeriaNinSlipTemplate(),)).extract(
+        np.zeros((20, 30, 3), dtype=np.uint8),
+    )
+
+    assert result.document_type is DocumentType.NIGERIA_NIN_SLIP
+    assert result.fields["nin"].value == "12345678901"
+    assert result.fields["nin"].validated
+    assert result.fields["date_of_birth"].validated
+    assert not result.requires_manual_review
+
+
+def test_document_liveness_verifier_gates_challenges_on_document_review():
+    first = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<"
+    second = "L898902C36UTO7408122F1204159ZE184226B<<<<<10"
+
+    class Ocr:
+        def read(self, _image):
+            return (OcrTextBlock(first, .99), OcrTextBlock(second, .98))
+
+    class Normalizer:
+        def normalize(self, image):
+            return NormalizedDocument(image.copy(), DocumentQuality(True, .9, .01, ()))
+
+    class Live:
+        challenges = ("blink", "turn_left")
+
+        def __init__(self):
+            self.observed = []
+
+        def observe(self, frame, timestamp):
+            self.observed.append((frame, timestamp))
+
+        def finish(self):
+            liveness = type("Liveness", (), {"reasons": (), "passed": True})()
+            result = VerificationResult(True, .9, liveness)
+            return VerificationRun(result, self.challenges)
+
+    class Verifier:
+        def __init__(self):
+            self.reference = None
+            self.live = Live()
+
+        def start(self, reference, **_):
+            self.reference = reference
+            return self.live
+
+    document = np.zeros((100, 160, 3), dtype=np.uint8)
+    verifier = Verifier()
+    service = DocumentLivenessVerifier(IdDocumentExtractor(Ocr(), normalizer=Normalizer(), detector=_OneFaceDetector()), verifier)
+
+    live = service.start(document)
+    live.observe(document, 1.0)
+    run = live.finish()
+
+    assert live.challenges == ("blink", "turn_left")
+    assert verifier.reference.shape == (4, 4, 3)
+    assert run.matched and run.automatic_decision_allowed
+
+    class UnknownOcr:
+        def read(self, _image):
+            return (OcrTextBlock("unrecognised document", .9),)
+
+    blocked = DocumentLivenessVerifier(IdDocumentExtractor(UnknownOcr(), normalizer=Normalizer()), verifier).start(document)
+    assert blocked.challenges == ()
+    assert blocked.requires_manual_review
+    assert "document extraction requires manual review before live verification" in blocked.reasons

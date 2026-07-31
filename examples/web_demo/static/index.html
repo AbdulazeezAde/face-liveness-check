@@ -11,25 +11,33 @@
       <section class="hero">
         <p class="eyebrow">LOCAL INTEGRATION DEMO</p>
         <h1>Face Liveness Check</h1>
-        <p class="lede">Upload a reference portrait, complete a randomized activity sequence, and inspect the result from the Python package.</p>
+        <p class="lede">Upload a consented ID image, review locally extracted fields, then complete a randomized activity sequence against its portrait.</p>
       </section>
 
       <section class="notice">
         <span class="notice-dot"></span>
-        Signed, expiring WebSocket sessions send frames only to this local server for in-memory processing. This demo does not retain evidence.
+        Document images and webcam frames are sent only to this local server for in-memory processing. This demo does not retain evidence.
       </section>
 
       <section class="grid">
         <section class="card setup-card">
-          <p class="step">01 · Reference</p>
-          <h2>Choose a portrait</h2>
-          <label class="upload" for="reference-input">
-            <input id="reference-input" type="file" accept="image/png,image/jpeg,image/webp">
+          <p class="step">01 · Identity document</p>
+          <h2>Choose a document image</h2>
+          <label class="upload" for="document-input">
+            <input id="document-input" type="file" accept="image/png,image/jpeg,image/webp">
             <span class="upload-icon">+</span>
-            <span><strong>Select image</strong><small>PNG, JPEG, or WebP · one face only</small></span>
+            <span><strong>Select image</strong><small>PNG, JPEG, or WebP · consented document only</small></span>
           </label>
-          <div id="reference-name" class="filename">No portrait selected</div>
-          <button id="start-button" class="primary" disabled>Start camera session</button>
+          <div id="document-name" class="filename">No document selected</div>
+          <label class="field-label" for="document-type">Document type
+            <select id="document-type">
+              <option value="unknown">Detect automatically</option>
+              <option value="passport_td3">Passport (TD3)</option>
+              <option value="nigeria_nin_slip">Nigeria NIN slip</option>
+            </select>
+          </label>
+          <button id="start-button" class="primary" disabled>Review document and start</button>
+          <div id="document-review" class="details hidden" aria-live="polite"></div>
         </section>
 
         <section class="card camera-card">
@@ -42,9 +50,9 @@
           </div>
           <div class="video-wrap">
             <video id="video" autoplay muted playsinline></video>
-            <div id="video-placeholder" class="video-placeholder">Camera preview appears here</div>
+            <div id="video-placeholder" class="video-placeholder">Camera preview appears after document review</div>
           </div>
-          <ol id="challenges" class="challenges"><li>Start a session to receive randomized prompts.</li></ol>
+          <ol id="challenges" class="challenges"><li>Review a document to receive randomized prompts.</li></ol>
           <div class="camera-actions">
             <button id="finish-button" class="secondary" disabled>Finish and verify</button>
             <span id="frame-count">0 frames analysed</span>

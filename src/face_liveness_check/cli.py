@@ -12,10 +12,13 @@ from time import monotonic
 from uuid import uuid4
 
 from .adapters import OnnxPassiveAntiSpoof, OpenCVYuNetDetector
+from .barcodes import ZxingBarcodeReader
 from .evidence import EvidencePolicy, LocalEncryptedEvidenceSink
 from .evaluation import PadCandidate, PadEvaluator, PadLabel, append_observation, calibrate_thresholds, summarize_observations
+from .id_document import DocumentType, IdDocumentExtractor
 from .model_packs import ModelPackManager, default_registry
 from .models import active_first_profile
+from .ocr import PaddleOcrEngine
 from .presets import create_opencv_verifier_from_pack
 from .reference_io import extract_reference_face_crop_file, load_reference_image_bgr
 from .webcam import verify_webcam
@@ -85,6 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
     retention.add_argument("--evidence-local-dir", required=True, type=Path)
     retention.add_argument("--evidence-key-env", default="FACE_LIVENESS_EVIDENCE_KEY")
     retention.add_argument("--apply", action="store_true", help="delete only sessions identified by the retention preview")
+
+    extract_id = subcommands.add_parser("extract-id", help="extract supported ID fields locally; does not store document data")
+    extract_id.add_argument("source", type=Path, help="image or PDF identity document")
+    extract_id.add_argument("--page", type=int, default=0, help="zero-indexed PDF page (default: 0)")
+    extract_id.add_argument("--document-type", choices=[item.value for item in DocumentType], default=DocumentType.UNKNOWN.value)
+    extract_id.add_argument("--read-barcodes", action="store_true", help="decode local QR/PDF417 barcodes when present")
+    extract_id.add_argument("--include-barcode-text", action="store_true", help="include sensitive barcode payload text in stdout JSON")
     return parser
 
 
@@ -112,6 +122,16 @@ def main(argv: list[str] | None = None) -> int:
         result = LocalEncryptedEvidenceSink(args.evidence_local_dir, key).purge_expired(dry_run=not args.apply)
         print(json.dumps(result.to_record(), indent=2))
         return 0
+    if args.command == "extract-id":
+        if args.include_barcode_text and not args.read_barcodes:
+            raise ValueError("--include-barcode-text requires --read-barcodes")
+        extractor = IdDocumentExtractor(
+            PaddleOcrEngine(),
+            barcode_reader=ZxingBarcodeReader() if args.read_barcodes else None,
+        )
+        result = extractor.extract(args.source, document_type=DocumentType(args.document_type), pdf_page=args.page)
+        print(json.dumps(_id_result_json(result, include_barcode_text=args.include_barcode_text), indent=2))
+        return 2 if result.requires_manual_review else 0
     installed = _resolve_pack(args, manager)
     if args.command == "extract":
         destination = extract_reference_face_crop_file(
@@ -271,4 +291,27 @@ def _run_json(run) -> dict[str, object]:
             "reasons": list(result.liveness.reasons),
             "warnings": list(result.liveness.warnings),
         },
+    }
+
+
+def _id_result_json(result, *, include_barcode_text: bool) -> dict[str, object]:
+    barcode_entries: list[dict[str, object]] = [{"format": barcode.format} for barcode in result.barcodes]
+    if include_barcode_text:
+        barcode_entries = [{"format": barcode.format, "text": barcode.text} for barcode in result.barcodes]
+    return {
+        "document_type": result.document_type.value,
+        "fields": {
+            name: {
+                "value": field.value,
+                "confidence": field.confidence,
+                "source": field.source.value,
+                "validated": field.validated,
+            }
+            for name, field in result.fields.items()
+        },
+        "quality": asdict(result.quality),
+        "barcode_count": len(result.barcodes),
+        "barcodes": barcode_entries,
+        "warnings": list(result.warnings),
+        "requires_manual_review": result.requires_manual_review,
     }

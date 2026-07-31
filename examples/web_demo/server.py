@@ -1,8 +1,8 @@
 """Local WebSocket browser integration example for face-liveness-check.
 
 This is a development integration UI, not a production authentication service.
-It keeps reference images and webcam frames in memory only for a short active
-session, and does not enable evidence retention.
+It keeps identity-document images and webcam frames in memory only for a short
+active session, and does not enable evidence retention.
 """
 
 from __future__ import annotations
@@ -24,13 +24,19 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from face_liveness_check import (
-    LivenessVerifier,
+    DocumentLivenessVerifier,
+    DocumentType,
+    IdDocumentExtractor,
     ModelPackManager,
     active_first_profile,
     create_opencv_verifier_from_pack,
     default_registry,
 )
-from face_liveness_check.verifier import LiveVerification, VerificationRun
+from face_liveness_check.adapters import OpenCVYuNetDetector
+from face_liveness_check.document_verifier import DocumentLiveVerification, DocumentVerificationRun
+from face_liveness_check.id_document import IdExtractionResult
+from face_liveness_check.ocr import PaddleOcrEngine
+from face_liveness_check.verifier import VerificationRun
 
 
 _MAX_REFERENCE_BYTES = 5 * 1024 * 1024
@@ -58,11 +64,28 @@ class HealthResponse(_MessageModel):
     allowed_origins: list[str]
 
 
+class ExtractedFieldResponse(_MessageModel):
+    value: str | None
+    confidence: float = Field(ge=0, le=1)
+    source: str
+    validated: bool
+
+
+class DocumentReviewResponse(_MessageModel):
+    document_type: str
+    fields: dict[str, ExtractedFieldResponse]
+    quality_warnings: list[str]
+    warnings: list[str]
+    portrait_available: bool
+    requires_manual_review: bool
+
+
 class SessionStartResponse(_MessageModel):
-    session_token: str = Field(min_length=1)
+    session_token: str | None = None
     challenges: list[str]
-    stream_path: Literal["/api/stream"]
-    expires_in_seconds: float = Field(gt=0)
+    stream_path: Literal["/api/stream"] | None = None
+    expires_in_seconds: float | None = Field(default=None, gt=0)
+    document: DocumentReviewResponse
 
 
 class StreamAuthenticateRequest(_MessageModel):
@@ -120,9 +143,18 @@ class VerificationResultResponse(_MessageModel):
     liveness: LivenessResponse
 
 
+class DocumentVerificationResultResponse(_MessageModel):
+    document: DocumentReviewResponse
+    verification: VerificationResultResponse | None
+    matched: bool
+    automatic_decision_allowed: bool
+    reasons: list[str]
+    requires_manual_review: bool
+
+
 class StreamResultMessage(_MessageModel):
     type: Literal["result"] = "result"
-    result: VerificationResultResponse
+    result: DocumentVerificationResultResponse
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +173,7 @@ class DemoConfig:
 
 @dataclass(slots=True)
 class _DemoSession:
-    live: LiveVerification
+    live: DocumentLiveVerification
     created_at: float
     expires_at: float
     last_frame_at: float | None = None
@@ -160,6 +192,13 @@ class DemoOriginError(ValueError):
     """A browser request came from an origin this local server does not trust."""
 
 
+@dataclass(frozen=True, slots=True)
+class DemoStart:
+    session_token: str | None
+    challenges: tuple[str, ...]
+    document: IdExtractionResult
+
+
 class DemoService:
     """Owns signed short-lived sessions and lazily loads the verified model pack."""
 
@@ -171,7 +210,7 @@ class DemoService:
         if config.max_frame_rate_hz <= 0:
             raise ValueError("max_frame_rate_hz must be positive")
         self.config = config
-        self._verifier: LivenessVerifier | None = None
+        self._document_verifier: DocumentLivenessVerifier | None = None
         self._sessions: dict[str, _DemoSession] = {}
         self._lock = Lock()
         self._model_lock = Lock()
@@ -187,7 +226,7 @@ class DemoService:
         return HealthResponse(
             status="ok",
             model_pack=self.config.model_pack,
-            models_loaded=self._verifier is not None,
+            models_loaded=self._document_verifier is not None,
             frame_retention="memory-only during an active session",
             stream_transport="websocket",
             session_ttl_seconds=self.config.session_ttl_s,
@@ -196,16 +235,18 @@ class DemoService:
             allowed_origins=list(self.allowed_origins),
         )
 
-    def start(self, reference_bgr: np.ndarray) -> tuple[str, tuple[str, ...]]:
+    def start(self, document_bgr: np.ndarray, *, document_type: DocumentType = DocumentType.UNKNOWN) -> DemoStart:
         with self._model_lock:
-            live = self._load_verifier().start(reference_bgr)
+            live = self._load_document_verifier().start(document_bgr, document_type=document_type)
+        if live.requires_manual_review:
+            return DemoStart(None, (), live.extraction)
         session_id = secrets.token_urlsafe(24)
         now = time.monotonic()
         expires_at = math.ceil(time.time() + self.config.session_ttl_s)
         with self._lock:
             self._remove_expired_locked()
             self._sessions[session_id] = _DemoSession(live, now, now + self.config.session_ttl_s)
-        return self._sign(session_id, expires_at), live.challenges
+        return DemoStart(self._sign(session_id, expires_at), live.challenges, live.extraction)
 
     def observe(self, session_token: str, frame_bgr: np.ndarray) -> StreamProgressMessage:
         session = self._session(session_token)
@@ -216,14 +257,16 @@ class DemoService:
                 raise DemoRateLimitError("frame rate limit exceeded; wait before sending another frame")
             session.last_frame_at = now
             session.live.observe(frame_bgr, now - session.created_at)
-            liveness = session.live.session.result()
+            if session.live.live is None:  # Defensive: review-gated sessions are never stored.
+                raise DemoSessionError("document requires manual review before live verification")
+            liveness = session.live.live.session.result()
         return StreamProgressMessage(
             frames_seen=liveness.frames_seen,
             completed_challenges=[challenge.value for challenge in liveness.completed_challenges],
             warnings=list(liveness.warnings),
         )
 
-    def finish(self, session_token: str) -> VerificationResultResponse:
+    def finish(self, session_token: str) -> DocumentVerificationResultResponse:
         session_id = self._verified_session_id(session_token)
         with self._lock:
             self._remove_expired_locked()
@@ -232,7 +275,7 @@ class DemoService:
             except KeyError as error:
                 raise DemoSessionError("session was not found or has expired") from error
         with session.lock, self._model_lock:
-            return _run_json(session.live.finish())
+            return _document_run_json(session.live.finish())
 
     def cancel(self, session_token: str) -> None:
         session_id = self._verified_session_id(session_token)
@@ -276,21 +319,23 @@ class DemoService:
             if now >= session.expires_at:
                 del self._sessions[session_id]
 
-    def _load_verifier(self) -> LivenessVerifier:
-        if self._verifier is None:
+    def _load_document_verifier(self) -> DocumentLivenessVerifier:
+        if self._document_verifier is None:
             manager = ModelPackManager(default_registry(), cache_dir=self.config.cache_dir)
             installed = (
                 manager.install(self.config.model_pack, accept_model_license=self.config.accept_model_license)
                 if self.config.download_models else manager.resolve(self.config.model_pack)
             )
-            self._verifier = create_opencv_verifier_from_pack(installed, profile=active_first_profile())
-        return self._verifier
+            verifier = create_opencv_verifier_from_pack(installed, profile=active_first_profile())
+            extractor = IdDocumentExtractor(PaddleOcrEngine(), detector=OpenCVYuNetDetector(installed.models["yunet"]))
+            self._document_verifier = DocumentLivenessVerifier(extractor, verifier)
+        return self._document_verifier
 
 
 def create_app(config: DemoConfig | None = None, *, service: DemoService | None = None) -> Any:
     """Create the local FastAPI app without importing demo dependencies at install time."""
     try:
-        from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+        from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
         from fastapi.responses import FileResponse
     except ImportError as error:  # pragma: no cover - dependency error is environment-specific
         raise ImportError(
@@ -322,11 +367,15 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
         return service.health()
 
     @app.post("/api/sessions", response_model=SessionStartResponse)
-    async def create_session(request: Request, reference: UploadFile = File(...)) -> SessionStartResponse:
+    async def create_session(
+        request: Request,
+        document: UploadFile = File(...),
+        document_type: str = Form(DocumentType.UNKNOWN.value),
+    ) -> SessionStartResponse:
         try:
             _require_allowed_origin(request.headers.get("origin"), service.allowed_origins)
-            image = await _read_bgr(reference)
-            session_token, challenges = service.start(image)
+            image = await _read_bgr(document)
+            started = service.start(image, document_type=DocumentType(document_type))
         except DemoOriginError as error:
             raise HTTPException(status_code=403, detail=str(error)) from error
         except ValueError as error:
@@ -334,10 +383,11 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
         except Exception as error:
             raise HTTPException(status_code=503, detail=f"unable to start verification: {error}") from error
         return SessionStartResponse(
-            session_token=session_token,
-            challenges=list(challenges),
-            stream_path="/api/stream",
-            expires_in_seconds=service.config.session_ttl_s,
+            session_token=started.session_token,
+            challenges=list(started.challenges),
+            stream_path="/api/stream" if started.session_token else None,
+            expires_in_seconds=service.config.session_ttl_s if started.session_token else None,
+            document=_document_json(started.document),
         )
 
     @app.websocket("/api/stream")
@@ -400,7 +450,7 @@ def create_app(config: DemoConfig | None = None, *, service: DemoService | None 
 
 async def _read_bgr(upload: Any) -> np.ndarray:
     payload = await upload.read(_MAX_REFERENCE_BYTES + 1)
-    return _decode_bgr(payload, _MAX_REFERENCE_BYTES, kind="reference image")
+    return _decode_bgr(payload, _MAX_REFERENCE_BYTES, kind="identity document image")
 
 
 def _decode_bgr(payload: bytes, maximum_bytes: int, *, kind: str = "image") -> np.ndarray:
@@ -474,6 +524,37 @@ def _run_json(run: VerificationRun) -> VerificationResultResponse:
             reasons=list(result.liveness.reasons),
             frames_seen=result.liveness.frames_seen,
         ),
+    )
+
+
+def _document_json(extraction: IdExtractionResult) -> DocumentReviewResponse:
+    """Expose only the requested field summary, never images, OCR blocks, or barcodes."""
+    return DocumentReviewResponse(
+        document_type=extraction.document_type.value,
+        fields={
+            name: ExtractedFieldResponse(
+                value=field.value,
+                confidence=field.confidence,
+                source=field.source.value,
+                validated=field.validated,
+            )
+            for name, field in extraction.fields.items()
+        },
+        quality_warnings=list(extraction.quality.warnings),
+        warnings=list(extraction.warnings),
+        portrait_available=extraction.portrait_crop_bgr is not None,
+        requires_manual_review=extraction.requires_manual_review,
+    )
+
+
+def _document_run_json(run: DocumentVerificationRun) -> DocumentVerificationResultResponse:
+    return DocumentVerificationResultResponse(
+        document=_document_json(run.extraction),
+        verification=_run_json(run.verification) if run.verification is not None else None,
+        matched=run.matched,
+        automatic_decision_allowed=run.automatic_decision_allowed,
+        reasons=list(run.reasons),
+        requires_manual_review=run.requires_manual_review,
     )
 
 

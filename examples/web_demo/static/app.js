@@ -1,5 +1,7 @@
-const referenceInput = document.querySelector("#reference-input");
-const referenceName = document.querySelector("#reference-name");
+const documentInput = document.querySelector("#document-input");
+const documentName = document.querySelector("#document-name");
+const documentType = document.querySelector("#document-type");
+const documentReview = document.querySelector("#document-review");
 const startButton = document.querySelector("#start-button");
 const finishButton = document.querySelector("#finish-button");
 const video = document.querySelector("#video");
@@ -19,9 +21,9 @@ let finishRequest;
 let streamReady;
 let expectedSocketClose = false;
 
-referenceInput.addEventListener("change", () => {
-  const [file] = referenceInput.files;
-  referenceName.textContent = file ? file.name : "No portrait selected";
+documentInput.addEventListener("change", () => {
+  const [file] = documentInput.files;
+  documentName.textContent = file ? file.name : "No document selected";
   startButton.disabled = !file;
 });
 
@@ -29,24 +31,31 @@ startButton.addEventListener("click", startSession);
 finishButton.addEventListener("click", finishSession);
 
 async function startSession() {
-  const [reference] = referenceInput.files;
-  if (!reference) return;
-  setBusy(startButton, true, "Starting…");
+  const [document] = documentInput.files;
+  if (!document) return;
+  setBusy(startButton, true, "Reviewing document…");
   resultCard.classList.add("hidden");
+  documentReview.classList.add("hidden");
   try {
+    const data = new FormData();
+    data.append("document", document);
+    data.append("document_type", documentType.value);
+    const response = await fetch("/api/sessions", { method: "POST", body: data });
+    const session = await response.json();
+    if (!response.ok) throw new Error(session.detail || "Could not review document");
+    renderDocumentReview(session.document);
+    if (session.document.requires_manual_review || !session.session_token) {
+      setStatus("Document review needed", "warning");
+      showDocumentReviewResult(session.document);
+      return;
+    }
+    sessionToken = session.session_token;
+    renderChallenges(session.challenges);
     stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
     video.srcObject = stream;
     await video.play();
     placeholder.classList.add("hidden");
     setStatus("Camera ready", "ready");
-
-    const data = new FormData();
-    data.append("reference", reference);
-    const response = await fetch("/api/sessions", { method: "POST", body: data });
-    const session = await response.json();
-    if (!response.ok) throw new Error(session.detail || "Could not start session");
-    sessionToken = session.session_token;
-    renderChallenges(session.challenges);
     await connectStream(session.stream_path, session.session_token);
     finishButton.disabled = false;
     setStatus("Secure stream active", "live");
@@ -57,7 +66,7 @@ async function startSession() {
     setStatus("Error", "error");
     showError(error.message);
   } finally {
-    setBusy(startButton, false, "Start camera session");
+    setBusy(startButton, false, "Review document and start");
   }
 }
 
@@ -83,9 +92,7 @@ function connectStream(streamPath, token) {
     socket.addEventListener("close", event => {
       socket = undefined;
       inFlight = false;
-      if (!expectedSocketClose && sessionToken) {
-        handleStreamError(new Error(`Stream closed (${event.code})`));
-      }
+      if (!expectedSocketClose && sessionToken) handleStreamError(new Error(`Stream closed (${event.code})`));
     });
   });
 }
@@ -211,19 +218,40 @@ function markCompleted(completed) {
   completed.forEach(item => document.querySelector(`[data-challenge="${item}"]`)?.classList.add("complete"));
 }
 
+function renderDocumentReview(document) {
+  const fields = Object.entries(document.fields);
+  const rows = fields.length ? fields.map(([name, field]) => `<li><strong>${escapeHtml(name.replaceAll("_", " "))}</strong>: ${escapeHtml(field.value || "not found")} ${field.validated ? "" : "(unvalidated)"}</li>`).join("") : "<li>No supported fields extracted.</li>";
+  const warnings = [...document.quality_warnings, ...document.warnings];
+  documentReview.innerHTML = `<h3>Document review · ${escapeHtml(document.document_type)}</h3><ul>${rows}</ul>${warnings.length ? `<h3>Warnings</h3><ul>${warnings.map(warning => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : "<p>Portrait and extracted fields are ready for the local liveness session.</p>"}`;
+  documentReview.classList.remove("hidden");
+}
+
+function showDocumentReviewResult(_documentReview) {
+  resultCard.classList.remove("hidden");
+  document.querySelector("#result-title").textContent = "Document requires review";
+  const badge = document.querySelector("#result-badge");
+  badge.textContent = "REVIEW";
+  badge.className = "result-badge fail";
+  document.querySelector("#metric-match").textContent = "Not started";
+  document.querySelector("#metric-similarity").textContent = "—";
+  document.querySelector("#metric-confidence").textContent = "—";
+  document.querySelector("#result-details").innerHTML = "<p>Webcam capture was not started. Resolve the document warnings and upload a clearer, supported document image.</p>";
+}
+
 function renderResult(result) {
-  const liveness = result.liveness;
+  const verification = result.verification;
+  const liveness = verification?.liveness;
   resultCard.classList.remove("hidden");
   document.querySelector("#result-title").textContent = result.matched ? "Verification passed" : "Verification needs review";
   const badge = document.querySelector("#result-badge");
   badge.textContent = result.matched ? "MATCH" : "NO MATCH";
   badge.className = `result-badge ${result.matched ? "pass" : "fail"}`;
   document.querySelector("#metric-match").textContent = result.matched ? "Yes" : "No";
-  document.querySelector("#metric-similarity").textContent = result.similarity == null ? "—" : result.similarity.toFixed(3);
-  document.querySelector("#metric-confidence").textContent = `${Math.round(liveness.confidence * 100)}%`;
-  const notes = [...liveness.warnings, ...liveness.reasons, ...result.reasons];
+  document.querySelector("#metric-similarity").textContent = verification?.similarity == null ? "—" : verification.similarity.toFixed(3);
+  document.querySelector("#metric-confidence").textContent = liveness ? `${Math.round(liveness.confidence * 100)}%` : "—";
+  const notes = [...(liveness?.warnings || []), ...(liveness?.reasons || []), ...(verification?.reasons || []), ...result.reasons];
   document.querySelector("#result-details").innerHTML = notes.length
-    ? `<h3>Signals</h3><ul>${notes.map(note => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
+    ? `<h3>Signals</h3><ul>${[...new Set(notes)].map(note => `<li>${escapeHtml(note)}</li>`).join("")}</ul>`
     : "<p>No warning signals reported.</p>";
 }
 
@@ -239,7 +267,7 @@ function setStatus(label, kind) {
 }
 
 function setBusy(button, busy, label) {
-  button.disabled = busy || (button === startButton && !referenceInput.files.length);
+  button.disabled = busy || (button === startButton && !documentInput.files.length);
   button.textContent = label;
 }
 
