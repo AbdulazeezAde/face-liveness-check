@@ -36,7 +36,7 @@ for an integrator without adding FastAPI or Pydantic to the published package.
 Install from the repository checkout:
 
 ```powershell
-python -m pip install -e ".[full,id-ocr]"
+python -m pip install -e ".[onnx,mediapipe,documents,id-ocr]"
 python -m pip install -r examples/web_demo/requirements.txt
 python examples/web_demo/server.py --download-models --accept-model-license
 ```
