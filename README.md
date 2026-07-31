@@ -10,6 +10,7 @@
 - Verifies that activity occurs in the requested order.
 - Requires stable single-face tracking, acceptable lighting/quality, passive anti-spoof scores, and non-duplicated video frames.
 - Compares normalized face embeddings with cosine similarity only after liveness succeeds.
+- Optionally extracts a portrait and typed fields from a consented ID image before any live camera session begins.
 - Leaves model selection to the application: use licensed ONNX detector, landmark, embedding, and PAD models appropriate for your deployment.
 
 ## Install
@@ -18,6 +19,8 @@
 pip install face-liveness-check
 # Full default stack, webcam support, and PDF ID input
 pip install 'face-liveness-check[full]'
+# Local OCR, document templates, and barcode decoding
+pip install 'face-liveness-check[id-ocr]'
 ```
 
 ## Quick start
@@ -77,7 +80,7 @@ a local-origin allowlist, frame-size limit, and frame-rate limit.
 Run it only from a repository checkout:
 
 ```powershell
-python -m pip install -e ".[full,id-ocr]"
+python -m pip install -e ".[onnx,mediapipe,documents,id-ocr]"
 python -m pip install -r examples/web_demo/requirements.txt
 python examples/web_demo/server.py --download-models --accept-model-license
 ```
@@ -232,11 +235,36 @@ pip install "face-liveness-check[id-ocr]"
 ```
 
 ```python
-from face_liveness_check import IdDocumentExtractor, PaddleOcrEngine
+from face_liveness_check import (
+    DocumentLivenessVerifier,
+    DocumentType,
+    IdDocumentExtractor,
+    ModelPackManager,
+    PaddleOcrEngine,
+    active_first_profile,
+    create_opencv_verifier_from_pack,
+    default_registry,
+)
+from face_liveness_check.adapters import OpenCVYuNetDetector
 
-result = IdDocumentExtractor(PaddleOcrEngine()).extract("passport.pdf")
-if not result.requires_manual_review:
-    reference_portrait = result.portrait_crop_bgr
+manager = ModelPackManager(default_registry())
+installed = manager.resolve("opencv-default")  # Or install after accepting its model licences.
+liveness_verifier = create_opencv_verifier_from_pack(installed, profile=active_first_profile())
+document_extractor = IdDocumentExtractor(
+    PaddleOcrEngine(),
+    detector=OpenCVYuNetDetector(installed.models["yunet"]),
+)
+verifier = DocumentLivenessVerifier(document_extractor, liveness_verifier)
+
+run = verifier.verify(
+    "consented-passport.jpg",
+    live_frames(),
+    document_type=DocumentType.PASSPORT_TD3,
+)
+if run.requires_manual_review:
+    print(run.reasons)  # Do not capture or use live frames before resolving review.
+else:
+    print(run.matched, run.verification.result.similarity)
 ```
 
 Use `face-liveness-check extract-id passport.pdf --document-type passport_td3`
@@ -247,10 +275,11 @@ available; barcode text stays out of terminal output unless explicitly requested
 the 11-digit NIN format. It does not authenticate the slip, holder, QR code, or
 NIN; use an authorised NIMC verification service for that separate decision.
 
-Use `DocumentLivenessVerifier(document_extractor, liveness_verifier)` when a
-document-derived portrait must be gated before the existing active-liveness
-challenge flow begins. Uncertain documents return a manual-review result and no
-camera prompts.
+`DocumentLivenessVerifier` extracts the document first, and only starts active
+liveness when extraction has a usable portrait with no review requirement.
+Uncertain documents return a manual-review result and no camera prompts. The
+document workflow checks extraction quality and identity consistency; it does
+not prove that an ID, QR code, NIN, or holder is authentic.
 
 The extractor processes data locally and does not write document images, OCR
 text, fields, or crops. Read the [ID document extraction guide](docs/ID_DOCUMENT_EXTRACTION.md)
