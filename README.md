@@ -66,17 +66,18 @@ duplicate-frame replays.
 The repository includes a small local browser frontend in
 [`examples/web_demo`](examples/web_demo) for testing an integration. It is not
 part of the installed library, does not add a CLI command, and is not included
-in the wheel. It uploads a reference portrait, samples webcam frames to a
-loopback-only FastAPI service, streams frames over WebSocket, shows the
-randomized prompts, and renders the verification result. Frames and the
-reference image remain in memory only for the active session. Each session has
-an HMAC-signed, expiring token; the example enforces a local-origin allowlist,
-frame-size limit, and frame-rate limit.
+in the wheel. It uploads a consented ID image, reviews extracted fields and a
+document portrait locally, then samples webcam frames to a loopback-only
+FastAPI service. Documents that need review never start a camera session. The
+example streams frames over WebSocket, shows randomized prompts, and renders
+the combined result. Images and frames remain in memory only for the active
+session. Each session has an HMAC-signed, expiring token; the example enforces
+a local-origin allowlist, frame-size limit, and frame-rate limit.
 
 Run it only from a repository checkout:
 
 ```powershell
-python -m pip install -e ".[full]"
+python -m pip install -e ".[full,id-ocr]"
 python -m pip install -r examples/web_demo/requirements.txt
 python examples/web_demo/server.py --download-models --accept-model-license
 ```

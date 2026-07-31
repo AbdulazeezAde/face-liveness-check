@@ -14,7 +14,7 @@ COPY src ./src
 COPY examples/web_demo ./examples/web_demo
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir ".[onnx,mediapipe,documents]" \
+    && python -m pip install --no-cache-dir ".[onnx,mediapipe,documents,id-ocr]" \
     && python -m pip install --no-cache-dir -r examples/web_demo/requirements.txt
 
 EXPOSE 8000

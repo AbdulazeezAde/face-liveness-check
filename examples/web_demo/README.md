@@ -1,17 +1,20 @@
 # Browser integration demo
 
 This local FastAPI example proves the browser-to-package integration: the browser
-uploads one reference portrait, sends sampled webcam frames to the local Python
-process, and displays the active liveness and identity result. It uses the
-active-first policy, so PAD warnings are shown but do not by themselves reject a
-session. Evidence retention is disabled. It is development-only: it is not an
-installed CLI command, and it is not included in the package wheel.
+uploads one consented identity-document image, extracts a portrait and reviewed
+fields locally, then sends sampled webcam frames to the local Python process.
+If the document needs review or lacks a usable portrait, the demo never opens a
+camera session or issues a WebSocket token. It uses the active-first policy, so
+PAD warnings are shown but do not by themselves reject a session. Evidence
+retention is disabled. It is development-only: it is not an installed CLI
+command, and it is not included in the package wheel.
 
-Version 2 streams binary JPEG frames through a localhost WebSocket. A reference
-upload starts a short-lived HMAC-signed session. The server accepts only the
-current local origin, limits every frame to 1 MB, and accepts at most two frames
-per second by default. The service is intentionally bound to `127.0.0.1`; it
-cannot be exposed with a host flag.
+Version 2 streams binary JPEG frames through a localhost WebSocket only after
+the document review passes. A successful review starts a short-lived
+HMAC-signed session. The server accepts only the current local origin, limits
+every frame to 1 MB, and accepts at most two frames per second by default. The
+service is intentionally bound to `127.0.0.1`; it cannot be exposed with a
+host flag.
 
 ## Typed FastAPI and WebSocket contracts
 
@@ -20,7 +23,8 @@ Pydantic request and response models are strict (`extra="forbid"`) and cover
 health, session creation, authentication, commands, progress, warnings, errors,
 and final verification results. Use these names when adapting the example:
 
-- `HealthResponse` and `SessionStartResponse` for HTTP endpoints.
+- `HealthResponse`, `SessionStartResponse`, `DocumentReviewResponse`, and
+  `DocumentVerificationResultResponse` for HTTP/final-result contracts.
 - `StreamAuthenticateRequest` and `StreamCommandRequest` for browser messages.
 - `StreamReadyMessage`, `StreamProgressMessage`, `StreamWarningMessage`,
   `StreamErrorMessage`, and `StreamResultMessage` for server messages.
@@ -32,7 +36,7 @@ for an integrator without adding FastAPI or Pydantic to the published package.
 Install from the repository checkout:
 
 ```powershell
-python -m pip install -e ".[full]"
+python -m pip install -e ".[full,id-ocr]"
 python -m pip install -r examples/web_demo/requirements.txt
 python examples/web_demo/server.py --download-models --accept-model-license
 ```
@@ -42,16 +46,34 @@ cache; on later runs omit `--download-models` to require the verified cache.
 
 ## Integration contract
 
-`POST /api/sessions` accepts one multipart `reference` image and returns:
+`POST /api/sessions` accepts one multipart `document` image plus an optional
+`document_type` (`unknown`, `passport_td3`, or `nigeria_nin_slip`). The image
+is handled in memory only; PDF uploads are intentionally not part of this demo.
+It returns a safe document review summary, never the source image, OCR regions,
+barcode payloads, normalized document, or portrait crop.
 
 ```json
 {
-  "session_token": "signed-expiring-bearer-token",
+  "session_token": "signed-expiring-bearer-token-or-null",
   "challenges": ["blink", "turn_left"],
-  "stream_path": "/api/stream",
-  "expires_in_seconds": 120
+  "stream_path": "/api/stream-or-null",
+  "expires_in_seconds": 120,
+  "document": {
+    "document_type": "passport_td3",
+    "fields": {},
+    "quality_warnings": [],
+    "warnings": [],
+    "portrait_available": true,
+    "requires_manual_review": false
+  }
 }
 ```
+
+When `requires_manual_review` is true, `session_token`, `stream_path`, and
+`expires_in_seconds` are null and `challenges` is empty. Resolve the document
+review first: the browser does not ask for webcam permission in that state.
+Document extraction is local OCR and quality assessment, not proof that an ID
+or government identifier is authentic.
 
 Connect to the returned path with `ws://127.0.0.1:8000`. First send
 `{"type":"authenticate","session_token":"..."}`; the token is kept out of
